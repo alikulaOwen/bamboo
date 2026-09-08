@@ -1,0 +1,15 @@
+[package]
+name = "bamboo-evm"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[dependencies]
+bamboo-core.workspace = true
+alloy.workspace = true
+alloy-primitives.workspace = true
+alloy-sol-types.workspace = true
+serde.workspace = true
+thiserror.workspace = true
+tokio.workspace = true

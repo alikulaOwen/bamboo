@@ -1,0 +1,33 @@
+[package]
+name = "bamboo-relayer"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "bamboo-relayer"
+path = "src/main.rs"
+
+[dependencies]
+bamboo-core.workspace = true
+bamboo-evm.workspace = true
+bamboo-solana.workspace = true
+bamboo-hedging.workspace = true
+bamboo-fiat.workspace = true
+axum.workspace = true
+tokio.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+rusqlite.workspace = true
+chrono.workspace = true
+thiserror.workspace = true
+anyhow.workspace = true
+hex.workspace = true
+uuid.workspace = true
+futures.workspace = true
+
+[dev-dependencies]
+tower = { version = "0.5", features = ["util"] }

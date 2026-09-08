@@ -1,0 +1,26 @@
+$schema: 'https://moonrepo.dev/schemas/project.json'
+
+language: 'rust'
+stack: 'backend'
+layer: 'library'
+
+dependsOn:
+  - 'bamboo-core'
+  - 'uniswap-hook'
+  - 'bnb-escrow'
+
+tasks:
+  build:
+    command: 'cargo build -p bamboo-evm'
+    deps:
+      - 'uniswap-hook:build'
+      - 'bnb-escrow:build'
+    inputs:
+      - 'src/**/*.rs'
+      - 'Cargo.toml'
+
+  test:
+    command: 'cargo test -p bamboo-evm'
+    inputs:
+      - 'src/**/*.rs'
+      - 'Cargo.toml'

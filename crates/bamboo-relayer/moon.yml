@@ -1,0 +1,25 @@
+$schema: 'https://moonrepo.dev/schemas/project.json'
+
+language: 'rust'
+stack: 'backend'
+layer: 'application'
+
+dependsOn:
+  - 'bamboo-core'
+  - 'bamboo-evm'
+  - 'bamboo-solana'
+  - 'bamboo-hedging'
+  - 'bamboo-fiat'
+
+tasks:
+  build:
+    command: 'cargo build -p bamboo-relayer'
+    inputs:
+      - 'src/**/*.rs'
+      - 'Cargo.toml'
+
+  test:
+    command: 'cargo test -p bamboo-relayer'
+    inputs:
+      - 'src/**/*.rs'
+      - 'Cargo.toml'

@@ -1,0 +1,19 @@
+# Rust
+target/
+
+# Foundry / Solidity
+out/
+cache/
+broadcast/
+contracts/**/lib/
+
+# Solana / Anchor
+.anchor/
+
+# Moon
+.moon/cache/
+
+# General
+*.log
+.env
+.DS_Store

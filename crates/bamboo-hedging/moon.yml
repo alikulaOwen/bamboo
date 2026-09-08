@@ -1,0 +1,21 @@
+$schema: 'https://moonrepo.dev/schemas/project.json'
+
+language: 'rust'
+stack: 'backend'
+layer: 'library'
+
+dependsOn:
+  - 'bamboo-core'
+
+tasks:
+  build:
+    command: 'cargo build -p bamboo-hedging'
+    inputs:
+      - 'src/**/*.rs'
+      - 'Cargo.toml'
+
+  test:
+    command: 'cargo test -p bamboo-hedging'
+    inputs:
+      - 'src/**/*.rs'
+      - 'Cargo.toml'

@@ -1,0 +1,21 @@
+$schema: 'https://moonrepo.dev/schemas/project.json'
+
+language: 'bash'
+stack: 'systems'
+layer: 'library'
+
+tasks:
+  build:
+    command: 'forge build'
+    inputs:
+      - 'src/**/*.sol'
+      - 'foundry.toml'
+    outputs:
+      - 'out'
+
+  test:
+    command: 'forge test'
+    inputs:
+      - 'src/**/*.sol'
+      - 'test/**/*.sol'
+      - 'foundry.toml'

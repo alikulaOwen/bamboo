@@ -1,0 +1,24 @@
+$schema: 'https://moonrepo.dev/schemas/project.json'
+
+language: 'rust'
+stack: 'backend'
+layer: 'library'
+
+dependsOn:
+  - 'bamboo-core'
+  - 'solana-escrow'
+
+tasks:
+  build:
+    command: 'cargo build -p bamboo-solana'
+    deps:
+      - 'solana-escrow:build'
+    inputs:
+      - 'src/**/*.rs'
+      - 'Cargo.toml'
+
+  test:
+    command: 'cargo test -p bamboo-solana'
+    inputs:
+      - 'src/**/*.rs'
+      - 'Cargo.toml'

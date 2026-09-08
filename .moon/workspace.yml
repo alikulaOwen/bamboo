@@ -1,0 +1,15 @@
+$schema: 'https://moonrepo.dev/schemas/workspace.json'
+
+projects:
+  # Smart Contract Spokes (Submodules)
+  uniswap-hook: 'contracts/uniswap-hook'
+  solana-escrow: 'contracts/solana-escrow'
+  bnb-escrow: 'contracts/bnb-escrow'
+
+  # Off-Chain Host Crates
+  bamboo-core: 'crates/bamboo-core'
+  bamboo-evm: 'crates/bamboo-evm'
+  bamboo-solana: 'crates/bamboo-solana'
+  bamboo-hedging: 'crates/bamboo-hedging'
+  bamboo-fiat: 'crates/bamboo-fiat'
+  bamboo-relayer: 'crates/bamboo-relayer'
