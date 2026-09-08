@@ -61,6 +61,26 @@ Moon links task dependencies topologically so that running `moon run bamboo-evm:
 
 ---
 
+## Git Submodules Architecture for Contract Spokes
+To decouple smart contract versioning, independent auditing cycles, and spoke deployment lifecycles from the off-chain relayer spine, all contract spokes are maintained in dedicated repositories linked via Git Submodules inside [`contracts/`](../../contracts/):
+
+| Spoke Directory | Upstream Repository | Architecture / Toolchain |
+| :--- | :--- | :--- |
+| [`contracts/uniswap-hook`](../../contracts/uniswap-hook) | [`alikulaOwen/bamboo-uniswap-hook`](https://github.com/alikulaOwen/bamboo-uniswap-hook) | Uniswap v4 `BaseHook` (`cancun`, Foundry) |
+| [`contracts/solana-escrow`](../../contracts/solana-escrow) | [`alikulaOwen/bamboo-solana-escrow`](https://github.com/alikulaOwen/bamboo-solana-escrow) | Squads Protocol v4 Architecture (Anchor SVM) |
+| [`contracts/bnb-escrow`](../../contracts/bnb-escrow) | [`alikulaOwen/bamboo-bnb-escrow`](https://github.com/alikulaOwen/bamboo-bnb-escrow) | Native BNB / BEP-20 Escrow (Foundry) |
+
+Cloning the parent repository with all submodules:
+```bash
+git clone --recurse-submodules git@github.com:alikulaOwen/bamboo.git
+```
+Or updating existing submodules:
+```bash
+git submodule update --init --recursive
+```
+
+---
+
 ## Moon CLI Commands
 
 ```bash

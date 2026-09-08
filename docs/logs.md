@@ -52,6 +52,9 @@ This document tracks chronological milestones, design upgrades, schema revisions
   - Re-architected `contracts/solana-escrow/programs/bamboo-escrow` following the **Squads Protocol v4** enterprise pattern.
   - Decomposed monolithic file into modular sub-packages: `constants.rs`, `errors.rs`, `events.rs`, `state/order.rs`, and individual instruction modules (`instructions/lock_order.rs`, `instructions/settle_payout.rs`, `instructions/claim_refund.rs`, `instructions/mod.rs`).
   - Implemented explicit account space calculation (`OrderAccount::LEN`), clear PDA seeds (`SEED_ORDER`, `SEED_VAULT`), and zero-ambiguity client account re-exports.
+* **Git Submodule Separation for Contract Spokes**:
+  - Decoupled smart contract spokes into 3 dedicated upstream repositories (`alikulaOwen/bamboo-uniswap-hook`, `alikulaOwen/bamboo-solana-escrow`, `alikulaOwen/bamboo-bnb-escrow`).
+  - Staged and registered submodules in `.gitmodules` under `contracts/` with isolated toolchains.
 * **OpenWiki Knowledge Base**:
   - Standardized all architecture, spoke, relayer, and operational guides under `docs/` using OKF v0.2 metadata and non-destructive sync boundaries.
 <!-- OPENWIKI:END -->

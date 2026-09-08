@@ -1,0 +1,9 @@
+[submodule "contracts/uniswap-hook"]
+	path = contracts/uniswap-hook
+	url = git@github.com:alikulaOwen/bamboo-uniswap-hook.git
+[submodule "contracts/solana-escrow"]
+	path = contracts/solana-escrow
+	url = git@github.com:alikulaOwen/bamboo-solana-escrow.git
+[submodule "contracts/bnb-escrow"]
+	path = contracts/bnb-escrow
+	url = git@github.com:alikulaOwen/bamboo-bnb-escrow.git
