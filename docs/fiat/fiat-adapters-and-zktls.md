@@ -21,6 +21,10 @@ generated:
 <!-- OPENWIKI:START -->
 # Domestic Fiat Adapters & zkTLS Verification
 
+> [!NOTE]
+> **Status: v1 differs — see [docs/plan/](../plan/00-overview.md)**  
+> Bamboo v1 exclusively supports M-Pesa KES via Safaricom Daraja B2C under a trusted reference relayer model with contract-enforced timeouts. zkTLS session proofs, Pix, and SEPA are future roadmap targets. See [12-mpesa-adapter.md](../plan/12-mpesa-adapter.md).
+
 Project Bamboo bridges decentralized on-chain liquidity into sovereign domestic payment rails through modular adapters implemented in [`crates/bamboo-fiat/src/lib.rs`](../../crates/bamboo-fiat/src/lib.rs).
 
 ```mermaid

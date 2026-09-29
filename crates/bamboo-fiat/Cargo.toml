@@ -17,3 +17,5 @@ async-trait.workspace = true
 chrono.workspace = true
 sha2.workspace = true
 hex.workspace = true
+hmac = "0.12"
+base64 = "0.21"

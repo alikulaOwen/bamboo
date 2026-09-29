@@ -1,5 +1,6 @@
 mod db;
 mod rfq;
+mod jurisdiction;
 
 use axum::{
     extract::{
@@ -12,7 +13,7 @@ use axum::{
     Json, Router,
 };
 use bamboo_core::MAX_HOST_FEE_BPS;
-use db::LedgerDb;
+use db::{Database, DoubleEntryTransferParams, StorageEngine};
 use rfq::{RfqEngine, RfqQuoteRequest, RfqQuoteResponse, RFQ_COUNTDOWN_SECONDS};
 use serde::{Deserialize, Serialize};
 use std::net::SocketAddr;
@@ -22,7 +23,7 @@ use tracing::{error, info};
 
 #[derive(Clone)]
 pub struct AppState {
-    pub db: LedgerDb,
+    pub db: Database,
     pub rfq: RfqEngine,
 }
 
@@ -60,13 +61,17 @@ async fn settle_order(
     State(state): State<Arc<AppState>>,
     Json(payload): Json<SettleOrderRequest>,
 ) -> Result<Json<serde_json::Value>, StatusCode> {
-    let mut order_id_bytes = [0u8; 32];
-    hex::decode_to_slice(&payload.order_id, &mut order_id_bytes)
-        .map_err(|_| StatusCode::BAD_REQUEST)?;
+    let transfer = DoubleEntryTransferParams {
+        order_id: payload.order_id.clone(),
+        debit_account: "ESCROW_RECEIVABLE_USDC".into(),
+        credit_account: "HOT_CRYPTO_TREASURY_USDC".into(),
+        asset: "USDC".into(),
+        amount: payload.payout_amount as f64,
+        memo: "Settlement payout release".into(),
+    };
 
-    state
-        .db
-        .record_settlement_double_entry(&order_id_bytes, payload.payout_amount, payload.host_fee)
+    StorageEngine::record_balanced_transaction(&state.db, transfer)
+        .await
         .map_err(|e| {
             error!("Failed to record settlement: {:?}", e);
             StatusCode::INTERNAL_SERVER_ERROR
@@ -139,7 +144,8 @@ async fn main() -> anyhow::Result<()> {
     info!("Starting Project Bamboo Unified Host Daemon (bamboo-relayer)");
     info!("Protocol Fee Ceiling: {} bps (0.25%)", MAX_HOST_FEE_BPS);
 
-    let db = LedgerDb::new_in_memory()?;
+    let storage_dir = std::env::var("BAMBOO_DATA_DIR").unwrap_or_else(|_| "/tmp/bamboo_relayer".into());
+    let db = StorageEngine::init(&storage_dir).await?;
     let rfq = RfqEngine::new();
     let state = Arc::new(AppState { db, rfq });
 
@@ -162,7 +168,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_health_endpoint() {
-        let db = LedgerDb::new_in_memory().unwrap();
+        let temp_dir = tempfile::tempdir().unwrap();
+        let db = StorageEngine::init(temp_dir.path().to_str().unwrap()).await.unwrap();
         let rfq = RfqEngine::new();
         let state = Arc::new(AppState { db, rfq });
         let app = create_router(state);

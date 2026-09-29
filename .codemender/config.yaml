@@ -1,0 +1,47 @@
+# CodeMender configuration for Project Bamboo
+# Cross-chain settlement engine (Solana Rust, Base/BSC Solidity, Axum relayer)
+
+server: {}
+
+scan:
+  extensions:
+    include:
+      - ".rs"
+      - ".sol"
+      - ".ts"
+      - ".js"
+      - ".toml"
+      - ".yaml"
+      - ".yml"
+      - ".json"
+    exclude:
+      - ".min.js"
+      - ".generated.rs"
+      - "Cargo.lock"
+  exclude_dirs:
+    - "node_modules"
+    - "target"
+    - "out"
+    - "cache"
+    - ".git"
+    - ".moon"
+  max_file_size_kb: 500
+  incremental: true
+
+output:
+  format: table   # "table", "json", "sarif"
+
+tools:
+  confirm_commands: true   # Prompt Y/N before running shell commands in local dev
+  confirm_writes: true     # Prompt Y/N before writing/modifying files in local dev
+
+vcs:
+  type: "git"
+
+build:
+  command: "cargo check --workspace"
+
+sandbox:
+  enabled: true
+  network:
+    profile: "permissive-closed"

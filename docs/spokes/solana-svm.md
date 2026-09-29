@@ -21,6 +21,10 @@ generated:
 <!-- OPENWIKI:START -->
 # Spoke 2: Solana SVM (Anchor Escrow)
 
+> [!NOTE]
+> **Status: v1 differs — see [docs/plan/](../plan/00-overview.md)**  
+> Bamboo v1 uses maker-seeded PDAs `[b"order", maker, nonce]` (not caller-supplied `order_id` alone) to eliminate order squatting, and enforces a challenge window ($W$) before finalization. See [10-solana-escrow.md](../plan/10-solana-escrow.md).
+
 The Solana spoke is implemented using the **Anchor framework** in [`contracts/solana-escrow/programs/bamboo-escrow/src/lib.rs`](../../contracts/solana-escrow/programs/bamboo-escrow/src/lib.rs). It provides micro-second settlement finality and high-frequency order handling on the Solana Sealevel runtime.
 
 ```mermaid

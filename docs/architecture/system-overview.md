@@ -20,6 +20,10 @@ generated:
 <!-- OPENWIKI:START -->
 # Project Bamboo – System Architecture & Three-Spoke Protocol
 
+> [!NOTE]
+> **Status: v1 differs — see [docs/plan/](../plan/00-overview.md)**  
+> Bamboo v1 is implemented as a single-chain, single-rail vertical slice: Solana USDC to Safaricom M-Pesa KES via a single reference relayer. The Three-Spoke architecture (Base Uniswap v4, BSC escrow) and Hyperliquid delta-neutral hedging are part of the long-term roadmap. See [00-overview.md](../plan/00-overview.md).
+
 Project Bamboo is a non-custodial, cross-chain fiat settlement engine that enables trustless, low-friction off-ramping directly from decentralized liquidity pools and native escrows into domestic banking rails.
 
 Settlement operates across three distinct execution spokes:

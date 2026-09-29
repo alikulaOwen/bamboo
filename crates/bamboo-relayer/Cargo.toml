@@ -21,13 +21,15 @@ serde.workspace = true
 serde_json.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
-rusqlite.workspace = true
+surrealdb = { version = "2.0", features = ["kv-surrealkv"] }
 chrono.workspace = true
 thiserror.workspace = true
 anyhow.workspace = true
 hex.workspace = true
 uuid.workspace = true
 futures.workspace = true
+async-trait.workspace = true
 
 [dev-dependencies]
 tower = { version = "0.5", features = ["util"] }
+tempfile = "3"

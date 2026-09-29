@@ -21,6 +21,10 @@ generated:
 <!-- OPENWIKI:START -->
 # Unified Host Daemon (`bamboo-relayer`)
 
+> [!NOTE]
+> **Status: v1 differs — see [docs/plan/](../plan/00-overview.md)**  
+> Bamboo v1 uses a single reference relayer operated by the protocol team with file-backed SQLite WAL persistence, not a multi-node open marketplace or SurrealDB. See [13-relayer-daemon.md](../plan/13-relayer-daemon.md) and [14-ledger.md](../plan/14-ledger.md).
+
 The off-chain backbone of Project Bamboo is compiled as a single binary **Rust Axum daemon** ([`crates/bamboo-relayer/src/main.rs`](../../crates/bamboo-relayer/src/main.rs)) designed for zero-cloud, self-hosted deployment by independent protocol node operators.
 
 ```mermaid
