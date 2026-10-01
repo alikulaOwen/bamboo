@@ -2,8 +2,8 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use thiserror::Error;
 
-/// Protocol fee ceiling: strict host fee ceiling (0.25% protocol ceiling)
-pub const MAX_HOST_FEE_BPS: u16 = 25;
+/// Protocol fee ceiling: strict host fee ceiling (1.00% protocol ceiling)
+pub const MAX_HOST_FEE_BPS: u16 = 100;
 
 /// Basis points divisor (100% = 10,000 bps)
 pub const BPS_DIVISOR: u64 = 10_000;
@@ -157,18 +157,18 @@ mod tests {
             amount: 1_000_000,
             fiat_recipient_hash: [2u8; 32],
             assigned_host: "0x789".into(),
-            host_fee_bps: 25,
+            host_fee_bps: 100,
             expiry_timestamp: 1800000000,
             status: OrderStatus::Locked,
         };
         assert!(order.validate_fee().is_ok());
-        assert_eq!(order.calculate_host_fee(), 2_500); // 0.25% of 1,000,000
-        assert_eq!(order.calculate_payout_amount(), 997_500);
+        assert_eq!(order.calculate_host_fee(), 10_000); // 1.00% of 1,000,000
+        assert_eq!(order.calculate_payout_amount(), 990_000);
 
-        order.host_fee_bps = 26;
+        order.host_fee_bps = 101;
         assert!(matches!(
             order.validate_fee(),
-            Err(BambooCoreError::HostFeeCeilingExceeded(26))
+            Err(BambooCoreError::HostFeeCeilingExceeded(101))
         ));
     }
 

@@ -86,23 +86,26 @@ sequenceDiagram
 
     Note over Solana: Status is SettlementRequested (timer W is ticking)
     
-    Maker->>Solana: dispute(order_id)
-    Note over Solana: Checked: clock.unix_timestamp < settlement_requested_at + W
+    Maker->>Solana: raise_dispute(order_id, dispute_bond)
+    Note over Solana: Checked: clock.unix_timestamp < settlement_requested_at + W && bond >= 5%
     Note over Solana: Status -> Disputed. disputed_at = clock.unix_timestamp
     Solana-->>Relayer: Event: OrderDisputed(order_id)
     
     Note over Relayer: Relayer daemon opens dispute investigation ticket
-    Note over Solana: Funds are frozen for DISPUTE_TIMEOUT (7 days)
+    Note over Solana: Funds are frozen for DISPUTE_TIMEOUT (14 days)
     
-    alt Dispute Resolved Offline (Maker Withdraws)
+    alt 2-of-3 Multisig Adjudication (Maker, Relayer, Mediator)
+        Relayer->>Solana: resolve_dispute_multisig(award_to_relayer) [2-of-3 Signatures]
+        Note over Solana: Proven payout: Principal + slashed bond to Relayer. Accounts closed.
+    else Offline Agreement (Maker Withdraws)
         Maker->>Solana: withdraw_dispute(order_id)
-        Note over Solana: Status -> SettlementRequested (finalize can now proceed)
-    else Dispute Timeout Expires (7 Days)
-        Maker->>Solana: resolve_dispute_timeout(order_id)
-        Note over Solana: 100% USDC returned to Maker. Accounts closed.
+        Note over Solana: Status -> SettlementRequested (dispute bond returned, finalize can proceed)
+    else Dispute Timeout Expires (14 Days)
+        Maker->>Solana: claim_refund(order_id)
+        Note over Solana: 100% USDC + dispute bond returned to Maker. Accounts closed.
     end
 ```
-- **Money Safety Property:** A fraudulent relayer assertion does not immediately seize funds; the maker has an un-bypassable window $W$ to freeze escrow.
+- **Money Safety Property:** A fraudulent relayer assertion does not immediately seize funds; the maker has an un-bypassable window $W$ to freeze escrow, while the dispute bond prevents false dispute extortion.
 
 ---
 

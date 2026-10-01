@@ -24,18 +24,21 @@ This document consolidates every architectural, legal, and economic decision tha
 
 ---
 
-## 1. Open Decisions Matrix
+## 1. Decisions Matrix & Resolution Status
 
-| Decision ID | Area | Options | Recommendation | Impact / What It Blocks |
+| Decision ID | Area | Options | Resolution Status | Notes / Rationale |
 |---|---|---|---|---|
-| **DEC-01** | **Float Refill / Liquidity Partner** | 1. Licensed OTC Desk (Yellow Card, Onafriq)<br>2. Global Exchange (Coinbase wire)<br>3. P2P Merchant Network | **Option 1 (Licensed OTC Partner):** Cleanest AML lineage, reliable RTGS settlement directly to Safaricom Paybill. | Blocks Phase P4 production deployment and treasury automation. |
-| **DEC-02** | **Ledger Database Engine** | 1. File-backed SQLite in WAL mode<br>2. Standalone PostgreSQL server | **Option 1 (SQLite WAL):** Zero external operational dependencies, single-binary daemon, sub-millisecond ACID writes. | Blocks Phase P0 database implementation. |
-| **DEC-03** | **Solana Ingestion Commitment Level** | 1. `confirmed` (~1–2s latency)<br>2. `finalized` (~12–15s latency) | **Option 2 (`finalized`):** M-Pesa fiat is irreversible. Paying fiat on an un-finalized block risks total capital loss during fork resets. | Blocks Phase P3 event listener implementation. |
-| **DEC-04** | **Dispute Window ($W$) Duration** | 1. 10 minutes (600s)<br>2. 30 minutes (1800s)<br>3. 60 minutes (3600s) | **Option 2 (30 minutes):** Ample time for telecom SMS delivery and maker verification without excessive relayer float lockup. | Blocks Phase P1 Anchor contract constants. |
-| **DEC-05** | **Dispute Freeze Timeout** | 1. 24 hours<br>2. 7 days<br>3. 14 days | **Option 2 (7 days):** Provides necessary window for operator support to contact the maker and reconcile Safaricom records. | Blocks Phase P1 Anchor dispute resolution logic. |
-| **DEC-06** | **Supported Collateral Mints** | 1. USDC only<br>2. USDC + USDT | **Option 1 (USDC only):** Deepest liquidity on Solana, predictable Circle compliance, zero peg-divergence risk. | Blocks Phase P1 program constants. |
-| **DEC-07** | **Relayer Operating Legal Entity** | 1. Foundation (offshore, e.g. BVI / Cayman)<br>2. Kenyan Operating Company (Ltd)<br>3. Hybrid (Offshore IP + Local Operating Subsidiary) | **Option 3 (Hybrid):** Offshore entity owns open-source protocol IP; local Kenyan entity holds Safaricom business contract and bank accounts. | Blocks Safaricom corporate onboarding and Daraja production credentials. |
-| **DEC-08** | **Kenyan Regulatory & VASP Licensing** | 1. Apply for CBK PSP / VASP license<br>2. Operate under an existing licensed payment aggregator<br>3. Closed pilot under regulatory sandbox | **Option 2 (Licensed Partner):** Fastest path to compliance without a multi-year direct central bank licensing queue. | Blocks public retail launch in Kenya. |
+| **DEC-01 / D-5** | **Float Refill / Liquidity Partner** | 1. Licensed OTC Desk (Yellow Card, Onafriq)<br>2. Global Exchange (Coinbase wire)<br>3. P2P Merchant Network | **Pending Counterparty Quotes (Placeholder)** | Candidate: Licensed OTC Desk. Spreads (25–50 bps) and wire cutoffs marked as unverified placeholders pending signed rate cards. |
+| **DEC-02** | **Ledger Database Engine** | 1. File-backed SQLite in WAL mode<br>2. Standalone PostgreSQL server | **RESOLVED: Option 1 (SQLite WAL)** | Zero external operational dependencies, single-binary daemon, sub-millisecond ACID writes, exact INTEGER atomic units. |
+| **DEC-03** | **Solana Ingestion Commitment Level** | 1. `confirmed` (~1–2s latency)<br>2. `finalized` (~12–15s latency) | **RESOLVED: Option 2 (`finalized`)** | M-Pesa fiat is irreversible. Paying fiat on an un-finalized block risks total capital loss during fork resets. |
+| **DEC-04** | **Dispute Window ($W$) Duration** | 1. 10 minutes (600s)<br>2. 30 minutes (1800s)<br>3. 60 minutes (3600s) | **RESOLVED: Option 2 (30 minutes = 1,800s)** | Sufficient for telecom SMS delivery; documented as a UX-dependent control requiring active push alerts. |
+| **DEC-05** | **Dispute Freeze Timeout** | 1. 24 hours<br>2. 7 days<br>3. 14 days | **RESOLVED: Option 3 (14 days = 1,209,600s)** | Adequate window for offline reconciliation, operator arbitration, and bank record inspection. |
+| **DEC-06** | **Supported Collateral Mints** | 1. USDC only<br>2. USDC + USDT | **RESOLVED: Option 1 (USDC only)** | Deepest liquidity on Solana, predictable Circle compliance, zero peg-divergence risk. |
+| **DEC-07** | **Relayer Operating Legal Entity** | 1. Foundation (offshore, e.g. BVI / Cayman)<br>2. Kenyan Operating Company (Ltd)<br>3. Hybrid (Offshore IP + Local Operating Subsidiary) | **RESOLVED: Option 3 (Hybrid)** | Offshore entity owns open-source protocol IP; local Kenyan entity holds Safaricom business contract and bank accounts. |
+| **DEC-08** | **Kenyan Regulatory & VASP Licensing** | 1. Apply for CBK PSP / VASP license<br>2. Operate under an existing licensed payment aggregator<br>3. Closed pilot under regulatory sandbox | **Option 2 (Licensed Partner)** | Fastest path to compliance without a multi-year direct central bank licensing queue. |
+| **D-2** | **Protocol Fee Ceiling** | 1. 25 bps ceiling + hidden FX spread<br>2. 100 bps immutable on-chain ceiling | **RESOLVED: Option 2 (100 bps ceiling)** | `MAX_HOST_FEE_BPS = 100` in smart contract. Published card sits at or below ceiling; no hidden spreads. |
+| **D-4** | **Operating Budget** | 1. Estimated $1,250/mo<br>2. Formally quoted vendor pricing | **Marked as Placeholder (Pending Quotes)** | Line items for RPC, tunneling, KYT, and legal retainers are provisional placeholders. |
+| **D-7** | **Maker Dispute Bond** | 1. 2%–5% token dispute bond<br>2. No bond in v1; velocity caps + loss reserve | **RESOLVED: Option 2 (No Bond in v1)** | 2% bond risks extortion without deterring fraud; v1 uses per-user caps, KYC attestation, and seeded loss reserve. Revisit at T1. |
 
 ---
 
@@ -71,20 +74,24 @@ A smart contract cannot know whether Safaricom credited the recipient's phone nu
 
 ---
 
-### Flaw B: Protocol Fee Ceiling (25 bps) vs. Safaricom B2C Fixed Tariffs
+### Flaw B: Protocol Fee Ceiling (25 bps) vs. Real Wholesale Unit Economics
 
-#### The Vulnerability:
-ADR 0001 and core protocol constants enforce a strict host fee ceiling of **25 bps ($0.25\%$)**:
+#### The Reality:
+ADR 0001 and core protocol constants enforce an on-chain host fee ceiling of **25 bps ($0.25\%$)**:
 ```rust
 pub const MAX_HOST_FEE_BPS: u16 = 25; // 0.25%
 ```
-However, Safaricom Daraja B2C charges **fixed tiered tariffs** that are independent of percentage:
-- An order of **100 USDC** yields a maximum host fee of **$0.25 USDC ($\approx \text{KES }32.60$)**.
-- Safaricom's official B2C tariff to disburse $\text{KES }13{,}050$ is **$\text{KES }60.00$ ($0.46 USDC$)**.
-- **Net Result:** The relayer loses $\text{KES }27.40$ on every 100 USDC transaction if relying solely on the on-chain host fee!
+Analysis of Safaricom's verified *M-PESA Bulk Payment Tariff Form* shows that Safaricom charges KES 11.00 for a KES 13,050 ($100) payout (~8.5 bps) and KES 13.00 for KES 65,250 ($500) payout (~2 bps). Thus, for tickets $\ge \$50$, the on-chain 25 bps host fee easily absorbs the Safaricom B2C fee.
+
+However, a strict 25 bps fee model without an exchange spread is **still commercially unviable** due to three separate wholesale cost components:
+1. **Wholesale OTC Refill Spread (25–75 bps):** Converting received USDC back into KES to replenish Paybill working float costs 25 to 75 bps across domestic OTC desks.
+2. **Kenyan Virtual Asset Excise Duty (10%):** Enacted under the Kenya Finance Act 2025, virtual asset service providers are levied a 10% excise duty on transaction fees.
+3. **Small-Ticket Disproportionality:** On a $10 ticket, the minimum KES 5.00 B2C charge equals ~39 bps, which exceeds 25 bps on its own.
 
 #### Recommended Economic Remediation:
-1. **Differentiate Host Fee from Rail Tariff:** The on-chain `host_fee_bps` should be recognized as a **protocol network coordination fee**.
-2. **Incorporate Operational Cost into Quoted Exchange Rate:** The reference relayer must set its RFQ conversion rate at wholesale spot minus $1.0\%\text{ to }1.5\%$. This spread absorbs Safaricom's B2C tariffs and banking rebalancing costs, ensuring positive unit economics across all order sizes above 10 USDC.
+1. **Transparent All-In Pricing:** Package fee and quoted FX spread into a transparent all-in price (~0.75% to 1.00%), which provides sustainable gross margin while beating card off-ramps (4–8%) and P2P desks (2–4%).
+2. **Wholesale Refill Optimization:** Secure competitive wholesale OTC execution ($\le 25\text{ bps}$) from multiple institutional liquidity providers.
+3. **Minimum Order Size:** Set a minimum order floor of $20\text{ to }25\text{ USDC}$ to protect against small-ticket fixed fee erosion.
+4. **Two-Way Flow Netting (v2):** Introducing KES $\to$ USDC on-ramp flow allows internal netting of opposing orders, drastically reducing the volume requiring wholesale OTC bank refills.
 
 <!-- OPENWIKI:END -->

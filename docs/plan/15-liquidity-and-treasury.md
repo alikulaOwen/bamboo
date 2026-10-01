@@ -70,12 +70,12 @@ Assume an honest maker executes an off-ramp order of **100 USDC**:
 | Step | Time | Relayer Action | Balance Changes |
 |---|---|---|---|
 | **Quote & Lock** | $T_0$ | Relayer quotes USD/KES = 130.50, fee = 20 bps ($0.20 USDC). Maker locks 100 USDC on Solana. | Escrow Vault: $+100.00\text{ USDC}$ |
-| **Fiat Disbursement** | $T_0 + 15\text{s}$ | Relayer verifies finalized lock and executes Daraja B2C payment to user's phone. | M-Pesa Float: $-\text{KES }13{,}050$<br>Safaricom B2C Fee: $-\text{KES }60.00$ |
+| **Fiat Disbursement** | $T_0 + 15\text{s}$ | Relayer verifies finalized lock and executes Daraja B2C payment to user's phone for $(100 - 0.20) \times 130.50 = \text{KES }13{,}023.90$. | M-Pesa Float: $-\text{KES }13{,}023.90$<br>Safaricom B2C Fee: $-\text{KES }11.00$ |
 | **Dispute Window** | $T_0 + 15\text{s} \to T_0 + 1815\text{s}$ | Relayer submits `request_settlement`. Waits 30 minutes ($W$). Maker confirms receipt; no dispute. | No balance movement (Funds frozen on-chain). |
-| **Finalization** | $T_0 + 1816\text{s}$ | Relayer executes `finalize(order_id)`. Receives 100 USDC. | Relayer Hot Wallet: $+100.00\text{ USDC}$<br>Escrow Vault: Closed ($0\text{ USDC}$) |
-| **Float Refill** | $T_0 + 6\text{h}$ | Relayer batches 10,000 USDC to an institutional OTC desk at 131.20 KES, receiving bank wire into Safaricom shortcode. | M-Pesa Float: $+\text{KES }1{,}312{,}000$<br>Hot Wallet: $-10{,}000\text{ USDC}$ |
+| **Finalization** | $T_0 + 1816\text{s}$ | Relayer or permissionless caller executes `finalize(order_id)`. Relayer receives 100 USDC (99.80 principal + 0.20 host fee). | Relayer Hot Wallet: $+100.00\text{ USDC}$<br>Escrow Vault: Closed ($0\text{ USDC}$) |
+| **Float Refill** | $T_0 + 6\text{h}$ | Relayer liquidates USDC via OTC desk at wholesale rate 129.85 KES (50 bps spread off 130.50 spot), wiring KES back into Paybill. | M-Pesa Float: $+\text{KES }1{,}298{,}500$<br>Hot Wallet: $-10{,}000\text{ USDC}$ |
 
-**Resulting Net Exposure:** During the 6-hour refill cycle, the relayer float absorbed $\text{KES }13{,}110$ of cash outflow before capital was recycled.
+**Resulting Net Exposure:** During the 6-hour refill cycle, the relayer float absorbed $\text{KES }13{,}034.90$ of cash outflow before capital was recycled.
 
 ---
 
@@ -85,19 +85,21 @@ To guarantee that the relayer never runs dry or exhausts float during peak volum
 
 $$F_{\text{required}} = (\text{Peak Hourly Volume}) \times (\text{Treasury Refill Hours}) \times (\text{Safety Buffer Multiplier})$$
 
+Where $\text{Peak Hourly Volume} = \left(\frac{\text{Daily Volume}}{24}\right) \times \text{Peak Multiplier}$ (typically $2.0\times\text{ to }3.0\times$ during peak daytime operating hours in East Africa).
+
 ### Recommended v1 Parameters:
 - **Assumed Daily Volume:** 10,000 USDC / day ($\approx \text{KES }1{,}305{,}000$).
 - **Refill Latency:** 12 hours (banking cutoff safety buffer).
 - **Safety Multiplier:** $1.5\times$.
-- **Minimum Target Float:**
-  $$F_{\text{min}} = \left(\frac{1{,}305{,}000}{24} \times 12\right) \times 1.5 \approx \mathbf{\text{KES }980{,}000} \approx \mathbf{\$7{,}500\text{ USDC}}$$
+- **Target Minimum Working Float:**
+  $$F_{\text{min}} = \left(\frac{1{,}305{,}000}{24} \times 2.0 \times 12\right) \times 1.5 \approx \mathbf{\text{KES }1{,}957{,}500} \approx \mathbf{\$15{,}000\text{ USDC}}$$
 
 ### Per-Order and Daily Velocity Limits
 
 | Parameter | Limit | Mechanism / Enforcement |
 |---|---|---|
 | **Minimum Order Size** | $10\text{ USDC}$ ($\approx \text{KES }1{,}305$) | Enforced on-chain and in RFQ engine to prevent sub-economic dust griefing. |
-| **Maximum Order Size** | $500\text{ USDC}$ ($\approx \text{KES }65{,}250$) | Enforced on-chain. Fits within Safaricom's KES 150,000 per-transaction cap. |
+| **Maximum Order Size** | $500\text{ USDC}$ ($\approx \text{KES }65{,}250$) | Enforced on-chain. Fits within Safaricom's KES 250,000 per-transaction B2C cap. |
 | **Daily Volume Cap** | $10{,}000\text{ USDC} / \text{day}$ | Relayer daemon refuses quotes once rolling 24h volume threshold is met. |
 | **Float Exhaustion Threshold** | $\text{KES }100{,}000$ | If float falls below KES 100,000, `/rfq/quote` returns HTTP 503 "Float Capacity Depleted". |
 
@@ -115,46 +117,57 @@ Converting received USDC back into KES to refill the M-Pesa B2C working account 
 | **B. Regulated Global Exchange** | Sell USDC for USD on Coinbase/Kraken, wire USD via SWIFT to local Kenyan bank account, convert to KES, transfer to Safaricom. | 24–48 hours | High banking friction; SWIFT wire delays and correspondent banking fees make micro-refills uneconomic. | Viable only for large bi-weekly treasury rebalancing ($>\$50\text{k}$). |
 | **C. P2P Merchant Network** | Disburse USDC to vetted local liquidity merchants in exchange for direct M-Pesa float transfers. | 15–30 mins | Extreme AML/KYC risk; personal M-Pesa accounts subject to Safaricom fraud freezes; high counterparty risk. | **REJECTED** |
 
-> **Open Decision:** The specific corporate banking partner and OTC counterparty for KES treasury refilling must be finalized prior to production launch. *(See `docs/plan/50-open-decisions.md`).*
+> [!IMPORTANT]
+> The specific corporate banking partner and wholesale OTC counterparty for KES treasury refilling must be confirmed with signed rate cards prior to production deployment.
 
 ---
 
-## 5. Unit Economics Under the 25 bps Protocol Fee Ceiling
+## 5. Verified Unit Economics & Fee Breakdown
 
-### 5.1 Official Cost Breakdown (Kenyan Shillings & USDC)
-- **Safaricom M-Pesa B2C Tariffs (Official Tariffs):**
-  - KES 101 – 500: KES 10.00
-  - KES 501 – 1,000: KES 15.00
-  - KES 1,001 – 2,500: KES 25.00
-  - KES 2,501 – 5,000: KES 35.00
-  - KES 5,001 – 10,000: KES 45.00
-  - KES 10,001 – 20,000: KES 60.00
-  - KES 20,001 – 50,000: KES 110.00
-- **Solana Transaction Fees:** 5,000 lamports ($\approx 0.000005\text{ SOL} \approx \$0.001$).
-- **OTC Conversion Spread:** $0.50\%\text{ to }0.75\%$ on wholesale USDC $\to$ KES conversion.
+### 5.1 Official Safaricom B2C Bulk Payment Tariffs
+Source: *Safaricom M-PESA Bulk Payment Tariff Form* (B2C registered users, customer charge = KES 0):
 
-### 5.2 The 25 bps Ceiling Economic Reality
-Under the on-chain protocol fee ceiling of **25 bps ($0.25\%$)**:
-- A **100 USDC order** yields an on-chain fee of:
-  $$100 \times 0.0025 = \mathbf{\$0.25\text{ USDC}} \approx \mathbf{\text{KES }32.60}$$
-- However, Safaricom's B2C tariff for KES 13,050 is **KES 60.00 ($0.46 USDC)**!
-- **Gross Loss:** The relayer loses $\text{KES }27.40$ on the transaction if it relies exclusively on the on-chain host fee.
+| Payout Bracket (KES) | Business Charge (KES) | Effective Cost on Median ($) | Effective Basis Points |
+|---|---|---|---|
+| **101 – 1,500** | KES 5.00 | $\approx \$10$ order | **~39 bps** |
+| **1,501 – 5,000** | KES 9.00 | $\approx \$25$ order | **~28 bps** |
+| **5,001 – 20,000** | KES 11.00 | $\approx \$100$ order | **~8.5 bps** |
+| **20,001 – 250,000** | KES 13.00 | $\approx \$500$ order | **~2.0 bps** |
 
-### 5.3 Break-Even Analysis & Economic Solution
+*Note: Transaction maximum for bulk B2C disbursement is KES 250,000 per transaction.*
 
-```
-Break-Even Equation:
-  On-Chain Fee (0.25%) >= Safaricom Tariff + Gas
-  For Ticket = 500 USDC (KES 65,250):
-    Fee = 500 * 0.0025 = $1.25 (KES 163.12)
-    Safaricom Tariff = KES 180.00 ($1.38)
-    Net: Relayer still loses KES 16.88.
-```
+### 5.2 Real Unit Cost Structure
+At tickets $\ge \$50$, Safaricom's B2C tariff is **not the primary margin bottleneck** — a 25 bps host fee easily absorbs the 2–8.5 bps B2C transaction cost.
 
-### Commercial Architecture Decision:
-To remain solvent while adhering to the immutable on-chain fee ceiling of 25 bps, **the relayer's business model incorporates an operational spread into the quoted exchange rate**:
-1. **On-Chain Fee:** Fixed at $\le 25\text{ bps}$ ($0.25\%$), transparently routed by the smart contract.
-2. **Quoted FX Spread:** The relayer sets its RFQ rate at wholesale spot minus $1.0\%\text{ to }1.5\%$. This spread absorbs Safaricom's fixed B2C tariffs, treasury conversion costs, and float capital cost, while still delivering retail users pricing superior to traditional card off-ramps ($4\%\text{ to }8\%$).
+Instead, overall net profitability is driven by four primary operational factors:
+1. **Wholesale OTC Refill Spread (USDC $\to$ KES):** Converting settled USDC to replenish domestic Paybill float typically costs 25 to 75 bps depending on counterparty tier.
+2. **Kenyan Virtual Asset Excise Duty:** Under the Kenya Finance Act 2025 (effective 1 July 2025), a **10% excise duty** applies to fees charged by virtual asset service providers.
+3. **Dispute & Fraud Loss Reserve:** Provisioning 5–15 bps for edge-case chargebacks or unresolved disputes.
+4. **Small-Ticket Drag:** For tickets $<\$20$, the fixed KES 5.00 minimum charge ($\approx 39\text{ bps}$) exceeds the 25 bps protocol ceiling unless buffered by a minimum ticket size or an exchange spread.
+
+### 5.3 Per-Order Margin Breakdown ($100 Ticket Benchmark)
+
+$$\text{Net Margin} = (\text{Host Fee} + \text{FX Spread}) - [\text{B2C Fee} + \text{OTC Refill Spread} + \text{Excise Duty} + \text{Fraud Loss} + \text{Float Cost}]$$
+
+At a **$100 Ticket** (KES 13,050 payout):
+- **Safaricom B2C Charge:** KES 11.00 ($\approx 8.5\text{ bps}$).
+- **OTC Refill Cost:** $\approx 50\text{ bps}$ (at standard institutional clip).
+- **Excise Duty (10% on fees):** $\approx 2.5\text{ to }10\text{ bps}$.
+- **Fraud/Dispute Provision:** $\approx 5\text{ bps}$.
+- **Float Holding Cost (12h cycle):** $\approx 1.5\text{ bps}$.
+
+| All-In Customer Price | Net Margin (bps) | Economic Viability |
+|---|---|---|
+| **0.25% (Fee Only, 0 Spread)** | **-43 bps** | Net Loss (Unviable without fee adjustment) |
+| **0.50%** | **-20 bps** | Sub-economic |
+| **0.75%** | **+2 bps** | Break-even |
+| **1.00%** | **+25 bps** | Healthy sustainable margin |
+| **1.20% (20 bps fee + 100 bps spread)** | **+43 bps** | Highly profitable, 3–4x cheaper than cards/P2P |
+
+### 5.4 Economic Architecture Recommendations
+1. **Refill Leg Optimization:** Solicit quotes from $\ge 3$ domestic liquidity desks (e.g. Yellow Card, Onafriq, Stanbic Treasury) targeting refill execution at $\le 25\text{ bps}$.
+2. **Minimum Ticket Threshold:** Maintain a minimum ticket floor of $20\text{ to }25\text{ USDC}$ to prevent sub-economic B2C fixed fee erosion.
+3. **Transparent All-In Pricing:** Package fee and quoted FX spread into a single, predictable all-in price (~0.75% to 1.00%) delivering clear consumer savings over card off-ramps (4–7%) and P2P merchants (2–4%).
 
 ---
 

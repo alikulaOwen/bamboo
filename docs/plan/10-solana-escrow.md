@@ -46,30 +46,36 @@ The escrow lifecycle follows a deterministic, unidirectional finite state machin
 
 ```mermaid
 stateDiagram-v2
-    [*] --> Locked: lock_order()\n[maker signs, deposits USDC + 0.01 SOL]
+    [*] --> Locked: lock_order()\n[maker signs, deposits USDC + 0.01 SOL bond]
     
     Locked --> SettlementRequested: request_settlement(mpesa_receipt)\n[relayer signs, timestamp <= expiry - W]
     Locked --> Refunded: claim_refund()\n[permissionless, timestamp >= expiry]
     
     SettlementRequested --> Disputed: dispute()\n[maker signs, timestamp < request_time + W]
-    SettlementRequested --> Finalized: finalize()\n[relayer signs, timestamp >= request_time + W]
+    SettlementRequested --> Finalized: finalize()\n[permissionless, timestamp >= request_time + W, pays relayer]
     
-    Disputed --> Refunded: resolve_dispute_timeout()\n[permissionless, timestamp >= dispute_time + DISPUTE_TIMEOUT]
+    Disputed --> SettlementRequested: withdraw_dispute()\n[maker signs]
+    Disputed --> Finalized: resolve_dispute_multisig(relayer)\n[2-of-3 signers: Maker, Relayer, Mediator]
+    Disputed --> Refunded: resolve_dispute_multisig(maker)\n[2-of-3 signers: Maker, Relayer, Mediator]
+    Disputed --> Refunded: claim_refund()\n[permissionless, timestamp >= dispute_time + DISPUTE_TIMEOUT]
     
-    Finalized --> [*]: Accounts Closed (Rent Reclaimed)
-    Refunded --> [*]: Accounts Closed (Rent Reclaimed)
+    Finalized --> [*]: Accounts Closed (Rent Reclaimed to Maker)
+    Refunded --> [*]: Accounts Closed (Rent Reclaimed to Maker)
 ```
 
 ### Complete Transition Matrix
 
 | Current State | Target State | Triggering Instruction | Authorized Caller | Preconditions | On-Chain Effects |
 |---|---|---|---|---|---|
-| `None` | `Locked` | `lock_order` | Maker | $D_{\min} \le \text{duration} \le D_{\max}$, fee $\le 25$ bps, token = allowed mint | Vault created; USDC transferred; 0.01 SOL bond deposited; `order_id` computed |
+| `None` | `Locked` | `lock_order` | Maker | $D_{\min} \le \text{duration} \le D_{\max}$, fee $\le 100$ bps, token = allowed mint | Vault created; USDC transferred; 0.01 SOL bond deposited; `order_id` computed |
 | `Locked` | `SettlementRequested` | `request_settlement` | Assigned Relayer | `clock.unix_timestamp <= order.expiry - W` | Status $\to$ `SettlementRequested`; `settlement_requested_at` and `mpesa_receipt` recorded |
 | `Locked` | `Refunded` | `claim_refund` | Permissionless (Anyone) | `clock.unix_timestamp >= order.expiry` | 100% USDC returned to maker; 0.01 SOL bond returned to maker; accounts closed |
-| `SettlementRequested` | `Disputed` | `dispute` | Maker | `clock.unix_timestamp < order.settlement_requested_at + W` | Status $\to$ `Disputed`; `disputed_at` recorded |
-| `SettlementRequested` | `Finalized` | `finalize` | Assigned Relayer | `clock.unix_timestamp >= order.settlement_requested_at + W` | USDC split: $(100\% - \text{fee}) \to$ recipient/relayer, $\text{fee} \to$ relayer; bond $\to$ maker; accounts closed |
-| `Disputed` | `Refunded` | `resolve_dispute_timeout` | Permissionless (Anyone) | `clock.unix_timestamp >= order.disputed_at + DISPUTE_TIMEOUT` | 100% USDC returned to maker; 0.01 SOL bond returned to maker; accounts closed |
+| `SettlementRequested` | `Disputed` | `dispute` | Maker | `clock.unix_timestamp < order.settlement_requested_at + W` | Status $\to$ `Disputed`; `disputed_at` recorded (No v1 dispute bond required; D-7) |
+| `SettlementRequested` | `Finalized` | `finalize` | Permissionless (Anyone) | `clock.unix_timestamp >= order.settlement_requested_at + W` | Principal $\to$ assigned relayer; fee $\to$ treasury; 0.01 SOL bond $\to$ maker; accounts closed |
+| `Disputed` | `SettlementRequested` | `withdraw_dispute` | Maker | None | Status $\to$ `SettlementRequested`; order returned to challenge pipeline |
+| `Disputed` | `Finalized` | `resolve_dispute_multisig` | 2-of-3 Signers | Relayer awarded | Principal $\to$ assigned relayer; 0.01 SOL bond $\to$ maker; accounts closed |
+| `Disputed` | `Refunded` | `resolve_dispute_multisig` | 2-of-3 Signers | Maker awarded | Principal $\to$ maker; 0.01 SOL bond $\to$ maker; accounts closed |
+| `Disputed` | `Refunded` | `claim_refund` | Permissionless (Anyone) | `clock.unix_timestamp >= order.disputed_at + DISPUTE_TIMEOUT` | Principal $\to$ maker; 0.01 SOL bond $\to$ maker; accounts closed |
 | **All Other** | Any | *Any* | *Any* | *Any* | **REVERT:** `InvalidStateTransition` |
 
 ---
@@ -170,13 +176,14 @@ impl OrderAccount {
 
 | Parameter | Identifier | Value | Justification |
 |---|---|---|---|
-| Minimum Lock Duration | `MIN_DURATION_SECONDS` | `900` (15 minutes) | Prevents zero-duration griefing; ensures sufficient time for fiat clearing. |
+| Minimum Lock Duration | `MIN_DURATION_SECONDS` | `3,600` (1 hour) | Must strictly exceed challenge window $W$ ($1{,}800\text{s}$) + fiat SLA ($1{,}800\text{s}$) so `expiry - W` cutoff is always valid. |
 | Maximum Lock Duration | `MAX_DURATION_SECONDS` | `604,800` (7 days) | Bounds working capital lockup; prevents indefinite token custody. |
 | Dispute Window | `SETTLEMENT_WINDOW_SECONDS` ($W$) | `1,800` (30 minutes) | Gives maker sufficient window to receive SMS notification and flag non-payment. |
 | Maximum Settlement Threshold | $\text{expiry} - W$ | Variable | Relayer MUST call `request_settlement` before this timestamp. Prevents settlement/refund race. |
-| Dispute Freeze Timeout | `DISPUTE_TIMEOUT_SECONDS` | `604,800` (7 days) | If disputed, funds freeze to allow off-chain investigation. Reverts to maker upon timeout. |
-| Fee Ceiling | `MAX_HOST_FEE_BPS` | `25` ($0.25\%$) | Protocol-wide cap protecting makers from fee gouging. |
+| Dispute Freeze Timeout | `DISPUTE_TIMEOUT_SECONDS` | `1,209,600` (14 days) | Failsafe timeout for unresolved disputes before funds automatically revert to maker. |
+| Fee Ceiling | `MAX_HOST_FEE_BPS` | `100` ($1.00\%$) | Protocol-wide immutable consumer protection cap protecting makers from fee gouging. |
 | Anti-Griefing Bond | `ANTI_GRIEFING_BOND_LAMPORTS` | `10,000,000` ($0.01\text{ SOL}$) | Economic deterrent against mass zero-capital order creation. |
+| Maker Dispute Bond | `MIN_DISPUTE_BOND_BPS` | Deferred (v1) | Concede D-7: No token dispute bond in v1; fraud defense handled via velocity caps, KYC, and loss reserve. |
 
 ---
 
@@ -200,7 +207,7 @@ impl OrderAccount {
   - `host_fee_bps: u16`
 - **Preconditions:**
   - `duration_seconds >= MIN_DURATION_SECONDS && duration_seconds <= MAX_DURATION_SECONDS`
-  - `host_fee_bps <= MAX_HOST_FEE_BPS`
+  - `host_fee_bps <= MAX_HOST_FEE_BPS` (where `MAX_HOST_FEE_BPS = 100`)
   - `token_mint.key() == ALLOWED_USDC_MINT`
 - **Canonical Order ID Computation:**
   ```rust
@@ -245,19 +252,20 @@ impl OrderAccount {
   - Emits `OrderDisputedEvent`
 
 ### 5.4 `finalize`
-- **Signers:** `relayer`
+- **Signers:** *Permissionless (Anyone can call after W; pays transaction fee)*
 - **Accounts:**
+  - `caller`: Signer
   - `order`: Mut, Close = `maker` (rent lamports refunded to maker)
-  - `relayer`: Signer, `constraint = relayer.key() == order.assigned_relayer`
-  - `maker`: Mut, AccountInfo (receives 0.01 SOL bond)
+  - `maker`: Mut, AccountInfo (receives 0.01 SOL bond refund)
   - `token_vault`: Mut, Token Account
-  - `relayer_token_account`: Mut, Token Account
+  - `relayer_token_account`: Mut, Token Account (`constraint = relayer_token_account.owner == order.assigned_relayer`)
+  - `fee_treasury_token_account`: Mut, Token Account
   - `token_program`
 - **Preconditions:**
   - `order.status == EscrowStatus::SettlementRequested`
   - `clock.unix_timestamp >= order.settlement_requested_at + SETTLEMENT_WINDOW_SECONDS`
 - **Effects:**
-  - Transfers 100% of tokens in vault to `relayer_token_account` via CPI signed by Order PDA
+  - Transfers principal to `relayer_token_account` and host fee to `fee_treasury_token_account`
   - Closes `token_vault` token account via `token::close_account` CPI, refunding vault rent to `maker`
   - Returns `anti_griefing_bond` ($0.01\text{ SOL}$) to `maker`
   - Closes `order` PDA account, returning account rent to `maker`
@@ -266,24 +274,56 @@ impl OrderAccount {
 ### 5.5 `claim_refund`
 - **Signers:** *Permissionless (Signer pays transaction fee)*
 - **Accounts:**
+  - `caller`: Signer
   - `order`: Mut
   - `maker`: Mut, AccountInfo (`constraint = maker.key() == order.maker`)
   - `token_vault`: Mut, Token Account
   - `maker_token_account`: Mut, Token Account (`constraint = maker_token_account.owner == order.maker`)
   - `token_program`
 - **Preconditions:**
-  - `order.status == EscrowStatus::Locked`
-  - `clock.unix_timestamp >= order.expiry_timestamp`
+  - `(order.status == EscrowStatus::Locked && clock.unix_timestamp >= order.expiry_timestamp) || (order.status == EscrowStatus::Disputed && clock.unix_timestamp >= order.disputed_at + DISPUTE_TIMEOUT_SECONDS)`
 - **Effects:**
-  - Transfers $100\%$ of `order.amount` from `token_vault` to `maker_token_account` via CPI
+  - Transfers $100\%$ of tokens in `token_vault` to `maker_token_account` via CPI
   - Closes `token_vault` token account, sending rent to `maker`
   - Refunds `anti_griefing_bond` ($0.01\text{ SOL}$) to `maker`
   - Closes `order` PDA account, sending rent to `maker`
   - Emits `OrderRefundedEvent`
 
+### 5.6 `withdraw_dispute`
+- **Signers:** `maker`
+- **Accounts:**
+  - `order`: Mut, Seeds = `[b"order", order.maker, order.nonce.to_le_bytes()]`
+  - `maker`: Signer, `constraint = maker.key() == order.maker`
+- **Preconditions:**
+  - `order.status == EscrowStatus::Disputed`
+- **Effects:**
+  - `order.status = EscrowStatus::SettlementRequested`
+  - Order re-enters normal settlement pipeline (can be finalized once window elapses)
+  - Emits `DisputeWithdrawnEvent`
+
+### 5.7 `resolve_dispute_multisig`
+- **Signers:** 2 of [`maker`, `assigned_relayer`, `mediator`]
+- **Accounts:**
+  - `order`: Mut, Close = `maker`
+  - `maker`: Mut, AccountInfo
+  - `token_vault`: Mut, Token Account
+  - `relayer_token_account`: Mut, Token Account
+  - `maker_token_account`: Mut, Token Account
+  - `token_program`
+- **Arguments:**
+  - `award_to_relayer: bool`
+- **Preconditions:**
+  - `order.status == EscrowStatus::Disputed`
+- **Effects:**
+  - If `award_to_relayer`: transfers vault tokens to `relayer_token_account`
+  - If not: transfers vault tokens to `maker_token_account`
+  - Refunds 0.01 SOL bond to `maker`
+  - Closes `token_vault` and `order` accounts
+  - Emits `DisputeResolvedEvent`
+
 ---
 
-## 6. Race Condition Analysis
+## 6. Race Condition Analysis & Operational Controls
 
 ```
 Timeline: [0 ---------------- expiry - W -------------- expiry]
@@ -291,7 +331,7 @@ Timeline: [0 ---------------- expiry - W -------------- expiry]
 Case 1: Relayer requests here: <----+                      |
         -> Dispute window W runs.                          |
         -> Maker can dispute during W.                     |
-        -> Relayer can finalize after W.                   |
+        -> Relayer or keeper can finalize after W.         |
         -> Expiry cannot trigger refund because            |
            status != Locked.                               |
                                                            |
@@ -301,13 +341,14 @@ Case 2: Relayer tries to request here: --------> [X REVERTS]|
 ```
 
 1. **Settlement vs. Expiry Race:**
-   - **Vulnerability in old code:** If an order expires at $T$, the relayer could call `settle_payout` at $T+1$ while the maker simultaneously called `claim_refund`.
-   - **Resolution:** A settlement request is invalid unless submitted at $t \le \text{expiry} - W$. Once `request_settlement` succeeds, the status becomes `SettlementRequested`, blocking `claim_refund`. If $t > \text{expiry} - W$, `request_settlement` reverts, guaranteeing the maker's refund.
-2. **Double-Spend / Reentrancy:**
-   - Vault tokens are transferred only via Anchor CPI with PDA signing seeds. State is mutated or closed within the transaction. Account balance checks guarantee zero funds remain in the vault prior to account closure.
-3. **Mempool Front-Running / Squatting:**
+   - A settlement request is invalid unless submitted at $t \le \text{expiry} - W$. Once `request_settlement` succeeds, the status becomes `SettlementRequested`, blocking `claim_refund`. If $t > \text{expiry} - W$, `request_settlement` reverts, guaranteeing the maker's refund.
+2. **Permissionless Finalization (Liveness Protection):**
+   - In earlier iterations, `finalize` required the relayer's signature. If the relayer suffered a server crash or lost its hot-wallet keys after disbursing M-Pesa, funds were permanently trapped. Under v1, `finalize` is **permissionless**: any keeper or maker can execute it after $W$, and the smart contract deterministically routes USDC to the `assigned_relayer` token account while returning rent and bond to the maker.
+3. **Operational Caveat on Dispute Window ($W = 1{,}800\text{s}$):**
+   - Because Solana cannot autonomously verify Safaricom M-Pesa SMS delivery, the challenge window $W$ is fundamentally a **UX-dependent control**. The relayer daemon can submit any 32-byte receipt string. If the maker's mobile client is offline or lacks automated push alerts, 30 minutes may be insufficient for a human to detect non-receipt and sign a dispute. Integrator frontends MUST implement active push notifications and alert monitors during this window.
+4. **Mempool Front-Running / Squatting:**
    - Addressed by maker-seeded PDAs (`[b"order", maker, nonce]`). No third party can initialize a PDA belonging to another maker.
-4. **Rent Trap / Account Bloat:**
+5. **Rent Trap / Account Bloat:**
    - Both `finalize` and `claim_refund` explicitly invoke `token::close_account` and return order account rent lamports to the maker. Zero dead accounts remain on Solana.
 
 ---
@@ -316,13 +357,14 @@ Case 2: Relayer tries to request here: --------> [X REVERTS]|
 
 ### Unit & Bankrun Tests (`anchor test`)
 1. `test_lock_order_success`: Verifies token deposit, bond debit, on-chain ID computation, and PDA seed isolation.
-2. `test_lock_order_below_min_duration`: Asserts failure when `duration < 900s`.
-3. `test_lock_order_exceed_fee_ceiling`: Asserts failure when `fee_bps > 25`.
+2. `test_lock_order_below_min_duration`: Asserts failure when `duration < 3600s`.
+3. `test_lock_order_exceed_fee_ceiling`: Asserts failure when `fee_bps > 100` (asserts that 101 bps reverts with `HostFeeExceedsCeiling`, and 100 bps succeeds).
 4. `test_request_settlement_after_cutoff`: Asserts revert when `timestamp > expiry - W`.
-5. `test_dispute_within_window`: Verifies transition to `Disputed`.
+5. `test_dispute_within_window`: Verifies transition to `Disputed` without requiring token bond.
 6. `test_dispute_after_window`: Asserts failure when `timestamp >= request + W`.
 7. `test_finalize_before_window_fails`: Asserts failure when `timestamp < request + W`.
-8. `test_permissionless_refund`: Verifies that an arbitrary signer can execute `claim_refund` past expiry and funds reach maker.
-9. `test_accounts_closed_and_rent_reclaimed`: Asserts order PDA and vault PDA have 0 lamports and null data after finalization/refund.
+8. `test_permissionless_finalize_pays_relayer`: Verifies that an arbitrary signer can execute `finalize` after window $W$, and tokens route strictly to `assigned_relayer`.
+9. `test_permissionless_refund`: Verifies that an arbitrary signer can execute `claim_refund` past expiry and funds reach maker.
+10. `test_accounts_closed_and_rent_reclaimed`: Asserts order PDA and vault PDA have 0 lamports and null data after finalization/refund.
 
 <!-- OPENWIKI:END -->

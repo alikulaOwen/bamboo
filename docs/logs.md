@@ -57,4 +57,44 @@ This document tracks chronological milestones, design upgrades, schema revisions
   - Staged and registered submodules in `.gitmodules` under `contracts/` with isolated toolchains.
 * **OpenWiki Knowledge Base**:
   - Standardized all architecture, spoke, relayer, and operational guides under `docs/` using OKF v0.2 metadata and non-destructive sync boundaries.
+
+---
+
+### [2026-09-29] - Pure-Rust SurrealKV, Dynamic MoR Compliance, and Bidirectional Rails
+* **Author**: Antigravity Protocol Engineer
+* **Scope**: `crates/bamboo-relayer`, `crates/bamboo-fiat`, `crates/bamboo-solana`, Architecture Decision Records (ADRs)
+
+#### Added & Upgraded
+* **Embedded SurrealDB Engine (`crates/bamboo-relayer`)**:
+  - Upgraded relayer storage layer to pure-Rust Embedded SurrealKV (`surrealdb` with `features = ["kv-surrealkv"]`), removing C-binding dependencies.
+  - Implemented ACID double-entry bookkeeping with pre-seeded Chart of Accounts (`ESCROW_RECEIVABLE_USDC`, `FIAT_FLOAT_KES`, `FIAT_FLOAT_BRL`, `FIAT_FLOAT_EUR`, `HOT_CRYPTO_TREASURY_USDC`, `FEE_REVENUE_USDC`, `DISPUTE_WRITEOFF_KES`).
+  - Implemented bidirectional order state machine (`FlowDirection::OnRamp` and `FlowDirection::OffRamp`) across 7 order states (`QUOTE_PENDING` $\rightarrow$ `LOCKED` $\rightarrow$ `PROCESSING` $\rightarrow$ `SETTLED` | `DISPUTED` | `REFUNDED`).
+  - Replaced Redis with native `LIVE SELECT` changefeed streaming for real-time WebSocket order subscriptions (`/orders/stream`).
+* **Dynamic Merchant of Record (MoR) & Compliance Engine (`crates/bamboo-relayer/src/jurisdiction.rs`)**:
+  - Added localized corporate subsidiary ring-fencing (`BambooKenyaLtd`, `BambooEuropeCasp`, `BambooBrazilLtda`, `RegulatedPartnerUs`).
+  - Built 3-Tier risk verification matrix: Tier 0 (< $150, phone OTP), Tier 1 ($150-$1,000, document KYC/liveness), Tier 2 (> $1,000, EDD/source of funds).
+  - Built automated pre-lock KYT wallet screening and sanctioned territory geofencing.
+* **Bidirectional Liquidity Rails & YellowCard OTC (`crates/bamboo-fiat`)**:
+  - Refactored `LiquidityRailAdapter` into a polymorphic trait with `RailDirection::Ingress` (on-ramp) and `RailDirection::Egress` (off-ramp).
+  - Implemented Safaricom Daraja C2B STK Push for ingress and B2C disbursement for egress.
+  - Added Pix dynamic QR code generation (ingress) and SPI Key transfers (egress).
+  - Added SEPA Instant ISO 20022 `camt.054` credit notifications and `pain.001` payment initiations.
+  - Added `YellowCardOtcAdapter` for institutional OTC on/off-ramping across 20+ African jurisdictions.
+* **Solana Client Enhancement (`crates/bamboo-solana`)**:
+  - Implemented full Anchor SVM instruction builders and account parsers for `lock_order`, `settle_payout`, and `claim_refund` instructions with PDA validation.
+* **Architecture Decision Records**:
+  - Added [ADR 0004 (SurrealKV)](./decisions/0004-relayer-zero-cloud-surrealkv.md) superseding SQLite WAL.
+  - Added [ADR 0006 (MoR Routing & Bidirectional Rails)](./decisions/0006-jurisdiction-mor-and-bidirectional-liquidity.md).
+  - Published comprehensive 11-part Bamboo v1 Implementation Plan under `docs/plan/`.
+
+---
+
+### [2026-09-30] - Documentation Refinement, Invariant Alignment, and Verification
+* **Author**: Antigravity Assistant
+* **Scope**: `README.md`, `docs/`, Wiki Navigation, Invariant Verification
+
+#### Refined
+* Replaced root `README.md` stub with comprehensive architecture guide, repository tree, invariants, and build quickstart.
+* Synchronized `docs/relayer/unified-host-daemon.md` and `docs/fiat/fiat-adapters-and-zktls.md` to reflect SurrealKV, MoR routing, bidirectional ingress/egress, and YellowCard OTC.
+* Verified that all 21 unit tests across all workspace crates (`bamboo-core`, `bamboo-evm`, `bamboo-fiat`, `bamboo-hedging`, `bamboo-relayer`, `bamboo-solana`) compile cleanly and pass with 0 failures.
 <!-- OPENWIKI:END -->
