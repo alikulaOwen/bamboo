@@ -113,6 +113,14 @@ pub trait LiquidityRailAdapter: Send + Sync {
 
     /// Queries the real-time operational float / working capital balance
     async fn get_working_float_balance(&self) -> Result<f64, FiatRailError>;
+
+    /// Fallback query for checking transaction status when async webhooks are delayed
+    async fn query_transaction_status(&self, _tx_id: &str) -> Result<RailReceipt, FiatRailError> {
+        Err(FiatRailError::Internal(format!(
+            "Transaction status query not supported on rail {}",
+            self.rail_id()
+        )))
+    }
 }
 
 // ============================================================================
@@ -447,6 +455,69 @@ impl LiquidityRailAdapter for MpesaRailAdapter {
         // Daraja balance is returned asynchronously via callback;
         // this method verifies query dispatch and returns nominal OK
         Ok(1_000_000.0) // Nominal baseline float verified on dispatch
+    }
+
+    /// Fallback query for Daraja transaction status: POST /mpesa/transactionstatus/v1/query
+    async fn query_transaction_status(&self, tx_id: &str) -> Result<RailReceipt, FiatRailError> {
+        let token = self.get_auth_token().await?;
+        let url = format!("{}/mpesa/transactionstatus/v1/query", self.config.base_url);
+
+        let payload = serde_json::json!({
+            "Initiator": self.config.initiator_name,
+            "SecurityCredential": self.config.security_credential,
+            "CommandID": "TransactionStatusQuery",
+            "TransactionID": tx_id,
+            "PartyA": self.config.b2c_shortcode,
+            "IdentifierType": "4",
+            "ResultURL": format!("{}/status/result", self.config.callback_url),
+            "QueueTimeOutURL": format!("{}/status/timeout", self.config.callback_url),
+            "Remarks": "Fallback Status Query",
+            "Occasion": "Status Query"
+        });
+
+        let resp = self
+            .client
+            .post(&url)
+            .bearer_auth(token)
+            .json(&payload)
+            .send()
+            .await?;
+
+        let status = resp.status();
+        let raw = resp.text().await?;
+
+        if !status.is_success() {
+            return Err(FiatRailError::PaymentRejected {
+                code: status.to_string(),
+                message: raw,
+            });
+        }
+
+        #[derive(Deserialize)]
+        #[serde(rename_all = "PascalCase")]
+        struct StatusQueryResponse {
+            conversation_id: Option<String>,
+            response_code: String,
+            response_description: String,
+        }
+
+        let parsed: StatusQueryResponse = serde_json::from_str(&raw).map_err(|e| {
+            FiatRailError::MalformedResponse(format!("Invalid TransactionStatus response JSON: {e}"))
+        })?;
+
+        if parsed.response_code != "0" {
+            return Err(FiatRailError::PaymentRejected {
+                code: parsed.response_code,
+                message: parsed.response_description,
+            });
+        }
+
+        Ok(RailReceipt {
+            rail_tx_id: parsed.conversation_id.unwrap_or_else(|| tx_id.to_string()),
+            cleared_amount: 0.0,
+            timestamp: Utc::now().timestamp(),
+            raw_response: raw,
+        })
     }
 }
 

@@ -472,6 +472,22 @@ impl StorageEngine {
             .map(|r| r.balance)
             .ok_or_else(|| DbError::AccountNotFound(account_id.to_string()))
     }
+
+    /// Queries all orders in a specific lifecycle status.
+    pub async fn get_orders_by_status(db: &Surreal<Db>, status: OrderStatus) -> Result<Vec<OrderRecord>, DbError> {
+        let ql = "SELECT * FROM order WHERE status = $status";
+        let mut res = db.query(ql).bind(("status", status.to_string())).await?;
+        let orders: Vec<OrderRecord> = res.take(0)?;
+        Ok(orders)
+    }
+
+    /// Queries active non-terminal orders for startup reconciliation and backfill.
+    pub async fn get_pending_active_orders(db: &Surreal<Db>) -> Result<Vec<OrderRecord>, DbError> {
+        let ql = "SELECT * FROM order WHERE status IN ['QUOTE_PENDING', 'LOCKED', 'PROCESSING', 'SETTLED']";
+        let mut res = db.query(ql).await?;
+        let orders: Vec<OrderRecord> = res.take(0)?;
+        Ok(orders)
+    }
 }
 
 #[cfg(test)]

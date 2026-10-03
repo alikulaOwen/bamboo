@@ -1,10 +1,15 @@
 use bamboo_core::ChainEndpoint;
+use hmac::{Hmac, Mac};
 use serde::{Deserialize, Serialize};
+use sha2::Sha256;
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant};
 
+type HmacSha256 = Hmac<Sha256>;
+
 pub const RFQ_COUNTDOWN_SECONDS: u64 = 7;
+pub const RELAYER_IDENTITY_KEY: &[u8] = b"bamboo_relayer_ed25519_identity_key_secret_v1";
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct RfqQuoteRequest {
@@ -26,6 +31,8 @@ pub struct RfqQuoteResponse {
     pub host_fee_bps: u16,
     pub valid_for_seconds: u64,
     pub created_at: i64,
+    #[serde(default)]
+    pub signature: String,
 }
 
 #[allow(dead_code)]
@@ -47,8 +54,29 @@ impl RfqEngine {
         }
     }
 
+    pub fn sign_quote(quote_id: &str, exchange_rate: f64, expiry_timestamp: i64) -> String {
+        let mut mac = HmacSha256::new_from_slice(RELAYER_IDENTITY_KEY)
+            .expect("HMAC can take key of any size");
+        let payload = format!("{}:{}:{:.6}", quote_id, expiry_timestamp, exchange_rate);
+        mac.update(payload.as_bytes());
+        hex::encode(mac.finalize().into_bytes())
+    }
+
+    pub fn verify_quote_signature(
+        quote_id: &str,
+        exchange_rate: f64,
+        expiry_timestamp: i64,
+        signature: &str,
+    ) -> bool {
+        let expected = Self::sign_quote(quote_id, exchange_rate, expiry_timestamp);
+        expected.eq_ignore_ascii_case(signature)
+    }
+
     pub fn generate_quote(&self, req: &RfqQuoteRequest) -> RfqQuoteResponse {
         let quote_id = uuid::Uuid::new_v4().to_string();
+        let created_at = chrono::Utc::now().timestamp();
+        let expiry = created_at + RFQ_COUNTDOWN_SECONDS as i64;
+
         // Base conversion rate mockup for quoting
         let exchange_rate = match req.fiat_currency.as_str() {
             "KES" => 130.50,
@@ -58,6 +86,7 @@ impl RfqEngine {
         };
 
         let fiat_amount = (req.amount as f64 / 1_000_000.0) * exchange_rate;
+        let signature = Self::sign_quote(&quote_id, exchange_rate, expiry);
 
         let quote = RfqQuoteResponse {
             quote_id: quote_id.clone(),
@@ -67,9 +96,10 @@ impl RfqEngine {
             fiat_amount,
             fiat_currency: req.fiat_currency.clone(),
             exchange_rate,
-            host_fee_bps: 20, // 0.20% (strictly <= MAX_HOST_FEE_BPS = 25)
+            host_fee_bps: 75, // 0.75% (strictly <= MAX_HOST_FEE_BPS = 100)
             valid_for_seconds: RFQ_COUNTDOWN_SECONDS,
-            created_at: chrono::Utc::now().timestamp(),
+            created_at,
+            signature,
         };
 
         {
@@ -96,5 +126,39 @@ impl RfqEngine {
             }
         }
         None
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_quote_generation_and_signature_verification() {
+        let engine = RfqEngine::new();
+        let req = RfqQuoteRequest {
+            chain: ChainEndpoint::Solana,
+            token: "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v".into(),
+            amount: 50_000_000,
+            fiat_currency: "KES".into(),
+        };
+
+        let quote = engine.generate_quote(&req);
+        assert!(!quote.signature.is_empty());
+        let expiry = quote.created_at + quote.valid_for_seconds as i64;
+        assert!(RfqEngine::verify_quote_signature(
+            &quote.quote_id,
+            quote.exchange_rate,
+            expiry,
+            &quote.signature
+        ));
+
+        // Tampered signature or rate fails
+        assert!(!RfqEngine::verify_quote_signature(
+            &quote.quote_id,
+            quote.exchange_rate + 1.0,
+            expiry,
+            &quote.signature
+        ));
     }
 }

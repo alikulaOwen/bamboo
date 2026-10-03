@@ -137,7 +137,7 @@ pub struct OrderAccount {
     pub disputed_at: i64,
     /// Safaricom M-Pesa transaction reference (max 32 ascii bytes, e.g. "QKH1234567")
     pub mpesa_receipt: [u8; 32],
-    /// Host relayer fee in basis points (max 25 bps = 0.25%)
+    /// Host relayer fee in basis points (max 100 bps = 1.00%)
     pub host_fee_bps: u16,
     /// User nonce for order derivation
     pub nonce: u64,

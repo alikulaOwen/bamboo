@@ -29,6 +29,10 @@ hex.workspace = true
 uuid.workspace = true
 futures.workspace = true
 async-trait.workspace = true
+sha2.workspace = true
+hmac = "0.12"
+reqwest.workspace = true
+base64 = "0.21"
 
 [dev-dependencies]
 tower = { version = "0.5", features = ["util"] }

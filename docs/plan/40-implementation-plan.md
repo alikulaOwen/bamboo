@@ -30,7 +30,7 @@ gantt
     dateFormat  YYYY-MM-DD
     section P0 Foundation
     Fail-closed fiat adapters & test harness      :p0_1, 2026-10-01, 4d
-    SQLite WAL persistence & auth hardening       :p0_2, after p0_1, 5d
+    Embedded SurrealKV persistence & auth hardening :p0_2, after p0_1, 5d
     section P1 Solana Program
     Anchor state machine, PDA isolation & rent    :p1_1, after p0_2, 7d
     Bankrun & property testing suite              :p1_2, after p1_1, 5d
@@ -48,7 +48,7 @@ gantt
 - **Objective:** Eliminate all mock security bypasses, make fiat verifiers fail-closed, and persist relayer data.
 - **Tasks:**
   1. Refactor [`crates/bamboo-fiat/src/lib.rs`](../../crates/bamboo-fiat/src/lib.rs): Remove dummy success returns (`amount_fiat: 0.0`) and substring checks (`contains("PAID")`). Enforce typed errors on unverified callbacks.
-  2. Refactor [`crates/bamboo-relayer/src/db.rs`](../../crates/bamboo-relayer/src/db.rs): Replace `new_in_memory()` with file-backed SQLite WAL database (`/var/data/bamboo/relayer.db`). Implement balanced double-entry accounting where `accounts.balance` is updated atomically.
+  2. Refactor [`crates/bamboo-relayer/src/db.rs`](../../crates/bamboo-relayer/src/db.rs): Replace `new_in_memory()` with pure-Rust **Embedded SurrealKV** (`surrealkv_data`) per [ADR 0004](../../docs/decisions/0004-relayer-zero-cloud-surrealkv.md). Implement balanced double-entry accounting where `account` balances are updated atomically.
   3. Delete insecure `POST /orders/settle` endpoint from [`crates/bamboo-relayer/src/main.rs`](../../crates/bamboo-relayer/src/main.rs).
 - **Definition of Done:** `cargo test --workspace` passes with zero in-memory stubs and zero fail-open logic.
 - **Test Evidence:** Integration test confirming that invalid proofs return `Err(FiatError::InvalidRecipient)`.
@@ -61,7 +61,7 @@ gantt
   1. Implement maker-isolated PDA seeds `[b"order", maker, nonce.to_le_bytes()]`.
   2. Implement binary on-chain order ID derivation matching `bamboo-core`.
   3. Implement five-state FSM: `Locked`, `SettlementRequested`, `Disputed`, `Finalized`, `Refunded`.
-  4. Enforce duration bounds ($900\text{s} \le D \le 604{,}800\text{s}$), fee ceiling ($\le 25\text{ bps}$), and settlement cutoff ($t \le \text{expiry} - W$).
+  4. Enforce duration bounds ($3{,}600\text{s} \le D \le 604{,}800\text{s}$), fee ceiling ($\le 100\text{ bps}$), and settlement cutoff ($t \le \text{expiry} - W$).
   5. Add explicit account closing (`close = maker`) to reclaim rent lamports on terminal states.
 - **Definition of Done:** Anchor program deployed to localnet and devnet; full test suite passing under `solana-program-test` / `bankrun`.
 - **Test Evidence:** Automated test run demonstrating that front-running order creation fails and expiration refund executes without maker signature.
@@ -84,11 +84,11 @@ gantt
 - **Objective:** Connect all components into an autonomous end-to-end settlement pipeline.
 - **Tasks:**
   1. Implement Solana WebSocket event listener with `finalized` commitment in `bamboo-relayer`.
-  2. Connect event listener to M-Pesa disbursement worker and SQLite WAL ledger.
+  2. Connect event listener to M-Pesa disbursement worker and Embedded SurrealKV ledger.
   3. Implement automated `request_settlement` and `finalize` cron pipeline.
   4. Build automated failure recovery on daemon startup.
 - **Definition of Done:** An end-to-end off-ramp transaction executes autonomously on Solana Devnet and Daraja Sandbox: Maker locks USDC $\to$ Relayer disburses KES $\to$ Escrow finalizes.
-- **Test Evidence:** Transaction signatures on Solana Explorer and SQLite journal records verifying zero balance drift.
+- **Test Evidence:** Transaction signatures on Solana Explorer and SurrealKV journal records verifying zero balance drift.
 
 ---
 
@@ -176,7 +176,7 @@ gantt
 
 | Phase | Milestone | Engineering Days (Range) | Assumptions |
 |---|---|---|---|
-| **P0** | Foundation & Fiat Hardening | 5 – 8 days | Single engineer working across Rust crates and SQLite WAL schema. |
+| **P0** | Foundation & Fiat Hardening | 5 – 8 days | Single engineer working across Rust crates and Embedded SurrealKV schema. |
 | **P1** | Solana Anchor Program v1 | 8 – 12 days | Uses Anchor 0.30+; comprehensive bankrun test coverage. |
 | **P2** | Daraja Sandbox Integration | 5 – 7 days | Safaricom developer portal sandbox account available immediately. |
 | **P3** | Relayer Daemon & Devnet E2E | 8 – 14 days | Dedicated Solana devnet node access; full state machine reconciliation. |

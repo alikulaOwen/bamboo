@@ -183,7 +183,7 @@ sequenceDiagram
 sequenceDiagram
     autonumber
     participant Daemon as Relayer Daemon (Restarted)
-    participant DB as SQLite WAL DB
+    participant DB as Embedded SurrealKV
     participant Solana as Solana Cluster
 
     Note over Daemon: Daemon process crashes during active order. Systemd restarts daemon.

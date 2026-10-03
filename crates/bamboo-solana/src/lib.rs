@@ -24,6 +24,33 @@ pub enum BambooSolanaError {
     InvalidStatus(u8),
 }
 
+/// Solana Instruction Account Metadata
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AccountMeta {
+    pub pubkey: [u8; 32],
+    pub is_signer: bool,
+    pub is_writable: bool,
+}
+
+/// Compiled Solana Instruction
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CompiledInstruction {
+    pub program_id: [u8; 32],
+    pub accounts: Vec<AccountMeta>,
+    pub data: Vec<u8>,
+}
+
+/// Compute Anchor 8-byte instruction discriminator: sha256("global:<name>")[..8]
+pub fn compute_instruction_discriminator(name: &str) -> [u8; 8] {
+    let mut hasher = Sha256::new();
+    hasher.update(b"global:");
+    hasher.update(name.as_bytes());
+    let result = hasher.finalize();
+    let mut disc = [0u8; 8];
+    disc.copy_from_slice(&result[..8]);
+    disc
+}
+
 /// Solana Bamboo Escrow On-Chain Account Representation
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
 pub struct SolanaEscrowAccount {
@@ -39,6 +66,169 @@ pub struct SolanaEscrowAccount {
     pub host_fee_bps: u16,
     pub status: u8, // 0 = None, 1 = Locked, 2 = Settled, 3 = Refunded
     pub bump: u8,
+}
+
+/// Solana Bamboo Escrow Protocol Configuration Account Representation
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
+pub struct ProtocolConfigAccount {
+    pub admin: [u8; 32],
+    pub mediator: [u8; 32],
+    pub fee_treasury: [u8; 32],
+    pub allowed_mint: [u8; 32],
+    pub max_host_fee_bps: u16,
+    pub paused: bool,
+    pub min_order_amount: u64,
+    pub max_order_amount: u64,
+    pub default_capacity: u64,
+    pub default_refill_rate_per_sec: u64,
+    pub bump: u8,
+}
+
+impl ProtocolConfigAccount {
+    pub const LEN: usize = 32 + 32 + 32 + 32 + 2 + 1 + 8 + 8 + 8 + 8 + 1; // 164 bytes
+
+    pub fn from_account_bytes(data: &[u8]) -> Result<Self, BambooSolanaError> {
+        let payload = if data.len() >= 8 + Self::LEN {
+            &data[8..8 + Self::LEN]
+        } else if data.len() >= Self::LEN {
+            &data[..Self::LEN]
+        } else {
+            return Err(BambooSolanaError::Serialization(format!(
+                "invalid protocol config byte length: expected {}, got {}",
+                Self::LEN,
+                data.len()
+            )));
+        };
+
+        let mut offset = 0;
+        let mut admin = [0u8; 32];
+        admin.copy_from_slice(&payload[offset..offset + 32]);
+        offset += 32;
+
+        let mut mediator = [0u8; 32];
+        mediator.copy_from_slice(&payload[offset..offset + 32]);
+        offset += 32;
+
+        let mut fee_treasury = [0u8; 32];
+        fee_treasury.copy_from_slice(&payload[offset..offset + 32]);
+        offset += 32;
+
+        let mut allowed_mint = [0u8; 32];
+        allowed_mint.copy_from_slice(&payload[offset..offset + 32]);
+        offset += 32;
+
+        let max_host_fee_bps = u16::from_le_bytes(payload[offset..offset + 2].try_into().unwrap());
+        offset += 2;
+
+        let paused = payload[offset] != 0;
+        offset += 1;
+
+        let min_order_amount = u64::from_le_bytes(payload[offset..offset + 8].try_into().unwrap());
+        offset += 8;
+
+        let max_order_amount = u64::from_le_bytes(payload[offset..offset + 8].try_into().unwrap());
+        offset += 8;
+
+        let default_capacity = u64::from_le_bytes(payload[offset..offset + 8].try_into().unwrap());
+        offset += 8;
+
+        let default_refill_rate_per_sec = u64::from_le_bytes(payload[offset..offset + 8].try_into().unwrap());
+        offset += 8;
+
+        let bump = payload[offset];
+
+        Ok(Self {
+            admin,
+            mediator,
+            fee_treasury,
+            allowed_mint,
+            max_host_fee_bps,
+            paused,
+            min_order_amount,
+            max_order_amount,
+            default_capacity,
+            default_refill_rate_per_sec,
+            bump,
+        })
+    }
+
+    pub fn to_bytes(&self) -> Vec<u8> {
+        let mut bytes = Vec::with_capacity(Self::LEN);
+        bytes.extend_from_slice(&self.admin);
+        bytes.extend_from_slice(&self.mediator);
+        bytes.extend_from_slice(&self.fee_treasury);
+        bytes.extend_from_slice(&self.allowed_mint);
+        bytes.extend_from_slice(&self.max_host_fee_bps.to_le_bytes());
+        bytes.push(if self.paused { 1 } else { 0 });
+        bytes.extend_from_slice(&self.min_order_amount.to_le_bytes());
+        bytes.extend_from_slice(&self.max_order_amount.to_le_bytes());
+        bytes.extend_from_slice(&self.default_capacity.to_le_bytes());
+        bytes.extend_from_slice(&self.default_refill_rate_per_sec.to_le_bytes());
+        bytes.push(self.bump);
+        bytes
+    }
+}
+
+/// Solana Bamboo Escrow Maker Rate Limiter PDA Account Representation
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
+pub struct MakerRateLimiterAccount {
+    pub maker: [u8; 32],
+    pub tokens_remaining: u64,
+    pub last_refill_timestamp: i64,
+    pub total_orders_locked: u64,
+    pub bump: u8,
+}
+
+impl MakerRateLimiterAccount {
+    pub const LEN: usize = 32 + 8 + 8 + 8 + 1; // 57 bytes
+
+    pub fn from_account_bytes(data: &[u8]) -> Result<Self, BambooSolanaError> {
+        let payload = if data.len() >= 8 + Self::LEN {
+            &data[8..8 + Self::LEN]
+        } else if data.len() >= Self::LEN {
+            &data[..Self::LEN]
+        } else {
+            return Err(BambooSolanaError::Serialization(format!(
+                "invalid maker rate limiter byte length: expected {}, got {}",
+                Self::LEN,
+                data.len()
+            )));
+        };
+
+        let mut offset = 0;
+        let mut maker = [0u8; 32];
+        maker.copy_from_slice(&payload[offset..offset + 32]);
+        offset += 32;
+
+        let tokens_remaining = u64::from_le_bytes(payload[offset..offset + 8].try_into().unwrap());
+        offset += 8;
+
+        let last_refill_timestamp = i64::from_le_bytes(payload[offset..offset + 8].try_into().unwrap());
+        offset += 8;
+
+        let total_orders_locked = u64::from_le_bytes(payload[offset..offset + 8].try_into().unwrap());
+        offset += 8;
+
+        let bump = payload[offset];
+
+        Ok(Self {
+            maker,
+            tokens_remaining,
+            last_refill_timestamp,
+            total_orders_locked,
+            bump,
+        })
+    }
+
+    pub fn to_bytes(&self) -> Vec<u8> {
+        let mut bytes = Vec::with_capacity(Self::LEN);
+        bytes.extend_from_slice(&self.maker);
+        bytes.extend_from_slice(&self.tokens_remaining.to_le_bytes());
+        bytes.extend_from_slice(&self.last_refill_timestamp.to_le_bytes());
+        bytes.extend_from_slice(&self.total_orders_locked.to_le_bytes());
+        bytes.push(self.bump);
+        bytes
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -75,6 +265,244 @@ impl SolanaEscrowClient {
         Err(BambooSolanaError::PdaDerivationError(
             "no off-curve address found for any bump".into(),
         ))
+    }
+
+    /// Derive the maker rate limiter PDA:
+    /// `sha256(b"rate_limiter" || maker || [bump] || program_id || "ProgramDerivedAddress")`
+    pub fn derive_rate_limiter_pda(
+        &self,
+        maker: &[u8; 32],
+    ) -> Result<([u8; 32], u8), BambooSolanaError> {
+        for bump in (0..=255u8).rev() {
+            let mut hasher = Sha256::new();
+            hasher.update(b"rate_limiter");
+            hasher.update(maker);
+            hasher.update([bump]);
+            hasher.update(self.program_id);
+            hasher.update(b"ProgramDerivedAddress");
+            let hash: [u8; 32] = hasher.finalize().into();
+            if CompressedEdwardsY(hash).decompress().is_none() {
+                return Ok((hash, bump));
+            }
+        }
+        Err(BambooSolanaError::PdaDerivationError(
+            "no off-curve address found for any bump".into(),
+        ))
+    }
+
+    /// Derive the global protocol config PDA:
+    /// `sha256(b"config" || [bump] || program_id || "ProgramDerivedAddress")`
+    pub fn derive_config_pda(&self) -> Result<([u8; 32], u8), BambooSolanaError> {
+        for bump in (0..=255u8).rev() {
+            let mut hasher = Sha256::new();
+            hasher.update(b"config");
+            hasher.update([bump]);
+            hasher.update(self.program_id);
+            hasher.update(b"ProgramDerivedAddress");
+            let hash: [u8; 32] = hasher.finalize().into();
+            if CompressedEdwardsY(hash).decompress().is_none() {
+                return Ok((hash, bump));
+            }
+        }
+        Err(BambooSolanaError::PdaDerivationError(
+            "no off-curve address found for any bump".into(),
+        ))
+    }
+
+    /// Derive the maker-seeded order PDA:
+    /// `sha256(b"order" || maker || nonce.to_le_bytes() || [bump] || program_id || "ProgramDerivedAddress")`
+    pub fn derive_maker_order_pda(
+        &self,
+        maker: &[u8; 32],
+        nonce: u64,
+    ) -> Result<([u8; 32], u8), BambooSolanaError> {
+        let nonce_bytes = nonce.to_le_bytes();
+        for bump in (0..=255u8).rev() {
+            let mut hasher = Sha256::new();
+            hasher.update(b"order");
+            hasher.update(maker);
+            hasher.update(&nonce_bytes);
+            hasher.update([bump]);
+            hasher.update(self.program_id);
+            hasher.update(b"ProgramDerivedAddress");
+            let hash: [u8; 32] = hasher.finalize().into();
+            if CompressedEdwardsY(hash).decompress().is_none() {
+                return Ok((hash, bump));
+            }
+        }
+        Err(BambooSolanaError::PdaDerivationError(
+            "no off-curve address found for maker order PDA".into(),
+        ))
+    }
+
+    /// Derive the token vault PDA for an order:
+    /// `sha256(b"vault" || order_pda || [bump] || program_id || "ProgramDerivedAddress")`
+    pub fn derive_vault_pda(
+        &self,
+        order_pda: &[u8; 32],
+    ) -> Result<([u8; 32], u8), BambooSolanaError> {
+        for bump in (0..=255u8).rev() {
+            let mut hasher = Sha256::new();
+            hasher.update(b"vault");
+            hasher.update(order_pda);
+            hasher.update([bump]);
+            hasher.update(self.program_id);
+            hasher.update(b"ProgramDerivedAddress");
+            let hash: [u8; 32] = hasher.finalize().into();
+            if CompressedEdwardsY(hash).decompress().is_none() {
+                return Ok((hash, bump));
+            }
+        }
+        Err(BambooSolanaError::PdaDerivationError(
+            "no off-curve address found for vault PDA".into(),
+        ))
+    }
+
+    /// Build instruction: initialize_maker_rate_limiter
+    pub fn build_initialize_maker_rate_limiter_ix(
+        &self,
+        maker: &[u8; 32],
+        system_program: &[u8; 32],
+    ) -> Result<CompiledInstruction, BambooSolanaError> {
+        let (config_pda, _) = self.derive_config_pda()?;
+        let (limiter_pda, _) = self.derive_rate_limiter_pda(maker)?;
+        let disc = compute_instruction_discriminator("initialize_maker_rate_limiter");
+
+        Ok(CompiledInstruction {
+            program_id: self.program_id,
+            accounts: vec![
+                AccountMeta { pubkey: *maker, is_signer: true, is_writable: true },
+                AccountMeta { pubkey: config_pda, is_signer: false, is_writable: false },
+                AccountMeta { pubkey: limiter_pda, is_signer: false, is_writable: true },
+                AccountMeta { pubkey: *system_program, is_signer: false, is_writable: false },
+            ],
+            data: disc.to_vec(),
+        })
+    }
+
+    /// Build instruction: lock_order
+    pub fn build_lock_order_ix(
+        &self,
+        maker: &[u8; 32],
+        assigned_relayer: &[u8; 32],
+        token_mint: &[u8; 32],
+        maker_token_account: &[u8; 32],
+        token_program: &[u8; 32],
+        system_program: &[u8; 32],
+        nonce: u64,
+        amount: u64,
+        fiat_recipient_hash: &[u8; 32],
+        duration_seconds: i64,
+        host_fee_bps: u16,
+    ) -> Result<CompiledInstruction, BambooSolanaError> {
+        let (config_pda, _) = self.derive_config_pda()?;
+        let (limiter_pda, _) = self.derive_rate_limiter_pda(maker)?;
+        let (order_pda, _) = self.derive_maker_order_pda(maker, nonce)?;
+        let (vault_pda, _) = self.derive_vault_pda(&order_pda)?;
+
+        let disc = compute_instruction_discriminator("lock_order");
+        let mut data = Vec::with_capacity(8 + 8 + 8 + 32 + 8 + 2);
+        data.extend_from_slice(&disc);
+        data.extend_from_slice(&nonce.to_le_bytes());
+        data.extend_from_slice(&amount.to_le_bytes());
+        data.extend_from_slice(fiat_recipient_hash);
+        data.extend_from_slice(&duration_seconds.to_le_bytes());
+        data.extend_from_slice(&host_fee_bps.to_le_bytes());
+
+        Ok(CompiledInstruction {
+            program_id: self.program_id,
+            accounts: vec![
+                AccountMeta { pubkey: *maker, is_signer: true, is_writable: true },
+                AccountMeta { pubkey: *assigned_relayer, is_signer: false, is_writable: false },
+                AccountMeta { pubkey: config_pda, is_signer: false, is_writable: false },
+                AccountMeta { pubkey: limiter_pda, is_signer: false, is_writable: true },
+                AccountMeta { pubkey: *token_mint, is_signer: false, is_writable: false },
+                AccountMeta { pubkey: order_pda, is_signer: false, is_writable: true },
+                AccountMeta { pubkey: vault_pda, is_signer: false, is_writable: true },
+                AccountMeta { pubkey: *maker_token_account, is_signer: false, is_writable: true },
+                AccountMeta { pubkey: *token_program, is_signer: false, is_writable: false },
+                AccountMeta { pubkey: *system_program, is_signer: false, is_writable: false },
+            ],
+            data,
+        })
+    }
+
+    /// Build instruction: request_settlement
+    pub fn build_request_settlement_ix(
+        &self,
+        assigned_relayer: &[u8; 32],
+        order_pda: &[u8; 32],
+        mpesa_receipt: &[u8; 32],
+    ) -> CompiledInstruction {
+        let disc = compute_instruction_discriminator("request_settlement");
+        let mut data = Vec::with_capacity(8 + 32);
+        data.extend_from_slice(&disc);
+        data.extend_from_slice(mpesa_receipt);
+
+        CompiledInstruction {
+            program_id: self.program_id,
+            accounts: vec![
+                AccountMeta { pubkey: *assigned_relayer, is_signer: true, is_writable: false },
+                AccountMeta { pubkey: *order_pda, is_signer: false, is_writable: true },
+            ],
+            data,
+        }
+    }
+
+    /// Build instruction: finalize (permissionless)
+    pub fn build_finalize_ix(
+        &self,
+        caller: &[u8; 32],
+        maker: &[u8; 32],
+        order_pda: &[u8; 32],
+        vault_pda: &[u8; 32],
+        relayer_token_account: &[u8; 32],
+        fee_treasury_token_account: &[u8; 32],
+        token_program: &[u8; 32],
+    ) -> Result<CompiledInstruction, BambooSolanaError> {
+        let (config_pda, _) = self.derive_config_pda()?;
+        let disc = compute_instruction_discriminator("finalize");
+
+        Ok(CompiledInstruction {
+            program_id: self.program_id,
+            accounts: vec![
+                AccountMeta { pubkey: *caller, is_signer: true, is_writable: false },
+                AccountMeta { pubkey: *maker, is_signer: false, is_writable: true },
+                AccountMeta { pubkey: config_pda, is_signer: false, is_writable: false },
+                AccountMeta { pubkey: *order_pda, is_signer: false, is_writable: true },
+                AccountMeta { pubkey: *vault_pda, is_signer: false, is_writable: true },
+                AccountMeta { pubkey: *relayer_token_account, is_signer: false, is_writable: true },
+                AccountMeta { pubkey: *fee_treasury_token_account, is_signer: false, is_writable: true },
+                AccountMeta { pubkey: *token_program, is_signer: false, is_writable: false },
+            ],
+            data: disc.to_vec(),
+        })
+    }
+
+    /// Build instruction: claim_refund (permissionless)
+    pub fn build_claim_refund_ix(
+        &self,
+        caller: &[u8; 32],
+        maker: &[u8; 32],
+        order_pda: &[u8; 32],
+        vault_pda: &[u8; 32],
+        maker_token_account: &[u8; 32],
+        token_program: &[u8; 32],
+    ) -> CompiledInstruction {
+        let disc = compute_instruction_discriminator("claim_refund");
+
+        CompiledInstruction {
+            program_id: self.program_id,
+            accounts: vec![
+                AccountMeta { pubkey: *caller, is_signer: true, is_writable: false },
+                AccountMeta { pubkey: *maker, is_signer: false, is_writable: true },
+                AccountMeta { pubkey: *order_pda, is_signer: false, is_writable: true },
+                AccountMeta { pubkey: *vault_pda, is_signer: false, is_writable: true },
+                AccountMeta { pubkey: *maker_token_account, is_signer: false, is_writable: true },
+                AccountMeta { pubkey: *token_program, is_signer: false, is_writable: false },
+            ],
+            data: disc.to_vec(),
+        }
     }
 
     /// Verify an on-chain account's bump/PDA matches its order_id.
@@ -218,9 +646,9 @@ mod tests {
             client.to_unified_order(&a),
             Err(BambooSolanaError::FeeCeilingExceeded(65_535))
         ));
-        a.host_fee_bps = 26;
+        a.host_fee_bps = 101;
         assert!(client.to_unified_order(&a).is_err());
-        a.host_fee_bps = 25;
+        a.host_fee_bps = 100;
         assert!(client.to_unified_order(&a).is_ok());
     }
 
@@ -258,5 +686,117 @@ mod tests {
         assert!(client.verify_account_pda(&[0u8; 32], &a).is_err());
         a.bump = bump.wrapping_sub(1);
         assert!(client.verify_account_pda(&pda, &a).is_err());
+    }
+
+    #[test]
+    fn protocol_config_account_roundtrip() {
+        let cfg = ProtocolConfigAccount {
+            admin: [1u8; 32],
+            mediator: [2u8; 32],
+            fee_treasury: [3u8; 32],
+            allowed_mint: [4u8; 32],
+            max_host_fee_bps: 75,
+            paused: false,
+            min_order_amount: 1_000_000,
+            max_order_amount: 50_000_000_000,
+            default_capacity: 5,
+            default_refill_rate_per_sec: 1,
+            bump: 253,
+        };
+        let bytes = cfg.to_bytes();
+        assert_eq!(bytes.len(), ProtocolConfigAccount::LEN);
+        assert_eq!(ProtocolConfigAccount::LEN, 164);
+
+        let parsed = ProtocolConfigAccount::from_account_bytes(&bytes).unwrap();
+        assert_eq!(parsed, cfg);
+    }
+
+    #[test]
+    fn maker_rate_limiter_account_roundtrip() {
+        let limiter = MakerRateLimiterAccount {
+            maker: [11u8; 32],
+            tokens_remaining: 4,
+            last_refill_timestamp: 1710000000,
+            total_orders_locked: 3,
+            bump: 251,
+        };
+        let bytes = limiter.to_bytes();
+        assert_eq!(bytes.len(), MakerRateLimiterAccount::LEN);
+        assert_eq!(MakerRateLimiterAccount::LEN, 57);
+
+        let parsed = MakerRateLimiterAccount::from_account_bytes(&bytes).unwrap();
+        assert_eq!(parsed, limiter);
+    }
+
+    #[test]
+    fn derive_rate_limiter_pda_is_off_curve() {
+        let client = SolanaEscrowClient::new([9u8; 32]);
+        let (pda, _bump) = client.derive_rate_limiter_pda(&[42u8; 32]).unwrap();
+        assert!(CompressedEdwardsY(pda).decompress().is_none());
+    }
+
+    #[test]
+    fn test_instruction_builders() {
+        let client = SolanaEscrowClient::new([9u8; 32]);
+        let maker = [1u8; 32];
+        let relayer = [2u8; 32];
+        let mint = [3u8; 32];
+        let maker_token_acct = [4u8; 32];
+        let token_program = [5u8; 32];
+        let system_program = [6u8; 32];
+        let fiat_hash = [7u8; 32];
+
+        // 1. Initialize maker rate limiter instruction
+        let init_limiter_ix = client.build_initialize_maker_rate_limiter_ix(&maker, &system_program).unwrap();
+        assert_eq!(init_limiter_ix.program_id, [9u8; 32]);
+        assert_eq!(init_limiter_ix.accounts.len(), 4);
+        assert_eq!(init_limiter_ix.data[..8], compute_instruction_discriminator("initialize_maker_rate_limiter"));
+
+        // 2. Lock order instruction
+        let lock_ix = client.build_lock_order_ix(
+            &maker,
+            &relayer,
+            &mint,
+            &maker_token_acct,
+            &token_program,
+            &system_program,
+            1,
+            50_000_000,
+            &fiat_hash,
+            3600,
+            50,
+        ).unwrap();
+        assert_eq!(lock_ix.accounts.len(), 10);
+        assert_eq!(lock_ix.data[..8], compute_instruction_discriminator("lock_order"));
+
+        // 3. Request settlement instruction
+        let req_ix = client.build_request_settlement_ix(&relayer, &lock_ix.accounts[5].pubkey, &[8u8; 32]);
+        assert_eq!(req_ix.accounts.len(), 2);
+        assert_eq!(req_ix.data[..8], compute_instruction_discriminator("request_settlement"));
+
+        // 4. Finalize instruction
+        let fin_ix = client.build_finalize_ix(
+            &relayer,
+            &maker,
+            &lock_ix.accounts[5].pubkey,
+            &lock_ix.accounts[6].pubkey,
+            &relayer,
+            &[10u8; 32],
+            &token_program,
+        ).unwrap();
+        assert_eq!(fin_ix.accounts.len(), 8);
+        assert_eq!(fin_ix.data[..8], compute_instruction_discriminator("finalize"));
+
+        // 5. Claim refund instruction
+        let refund_ix = client.build_claim_refund_ix(
+            &maker,
+            &maker,
+            &lock_ix.accounts[5].pubkey,
+            &lock_ix.accounts[6].pubkey,
+            &maker_token_acct,
+            &token_program,
+        );
+        assert_eq!(refund_ix.accounts.len(), 6);
+        assert_eq!(refund_ix.data[..8], compute_instruction_discriminator("claim_refund"));
     }
 }

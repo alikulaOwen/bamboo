@@ -76,7 +76,7 @@ flowchart TD
     subgraph RelayerInfrastructure ["Bamboo Reference Relayer"]
         RelayerDaemon["Relayer Daemon (Rust / Axum)\n(bamboo-relayer)"]
         ChainListener["Solana WebSocket Listener\n(Commitment: Finalized)"]
-        Ledger["SQLite WAL Double-Entry DB\n(accounts, journal, orders)"]
+        Ledger["Embedded SurrealKV DB\n(accounts, journal, orders)"]
         MpesaModule["M-Pesa Adapter\n(bamboo-fiat / Daraja B2C)"]
         
         RelayerDaemon <--> ChainListener
@@ -131,7 +131,7 @@ timeline
         Single Chain : Solana SVM (USDC)
         Single Rail : M-Pesa KES (B2C)
         Trust Model : Single Reference Relayer + On-Chain Timers
-        Storage : SQLite WAL File-Backed
+        Storage : Embedded SurrealKV (Pure Rust)
     section v2 (Multi-Rail & Persistence)
         New Rails : Pix (BRL), SEPA Instant (EUR)
         Database : PostgreSQL Distributed Ledger

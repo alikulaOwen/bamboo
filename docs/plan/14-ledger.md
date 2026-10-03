@@ -1,12 +1,13 @@
 ---
 okf_version: "0.2"
-title: "Double-Entry Ledger Specification"
-description: "Technical specification for bamboo-relayer double-entry bookkeeping, SQLite WAL persistence, chart of accounts, and automated reconciliation."
+title: "Double-Entry Ledger Specification (Embedded SurrealKV)"
+description: "Technical specification for bamboo-relayer double-entry bookkeeping, pure-Rust Embedded SurrealKV persistence, SCHEMAFULL schema, and automated three-way reconciliation."
 type: "plan"
 tags:
   - plan
   - ledger
-  - sqlite-wal
+  - surrealkv
+  - surrealdb
   - accounting
   - double-entry
 categories:
@@ -14,7 +15,7 @@ categories:
 resource: "crates/bamboo-relayer/src/db.rs"
 generated:
   by: "openwiki/0.2"
-  at: "2026-09-29T07:30:00Z"
+  at: "2026-10-02T06:18:00Z"
 ---
 
 <!-- OPENWIKI:START -->
@@ -22,27 +23,28 @@ generated:
 
 ## 1. Purpose & Responsibilities
 
-The `LedgerDb` module in `bamboo-relayer` enforces cryptographic double-entry bookkeeping across all fiat disbursements and crypto settlements. It provides absolute financial auditability and guarantees that the relayer never leaks capital or experiences untracked balance drift.
+The `StorageEngine` and ledger module in `bamboo-relayer` enforces cryptographic double-entry bookkeeping across all fiat disbursements and crypto settlements. It provides absolute financial auditability and guarantees that the relayer never leaks capital or experiences untracked balance drift.
 
 ### Responsibilities
 - **ACID Double-Entry Accounting:** Enforce balanced journal transactions where every debit strictly equals every credit ($\sum \text{Debits} = \sum \text{Credits}$).
-- **State Persistence:** Migrate from ephemeral in-memory databases ([`main.rs:142`](../../crates/bamboo-relayer/src/main.rs)) to a persistent, file-backed SQLite database operating in Write-Ahead Logging (WAL) mode.
-- **Account Balance Tracking:** Maintain live account balances updated atomically within each journal transaction, resolving the schema omission where `accounts.balance` was never updated.
+- **Zero-Cloud Embedded Persistence:** Backed by pure-Rust **Embedded SurrealKV** (`crates/bamboo-relayer/src/db.rs`), completely eliminating external DBMS daemons, PostgreSQL, and SQLite C-bindings (`rusqlite`) per [ADR 0004](../../docs/decisions/0004-relayer-zero-cloud-surrealkv.md).
+- **Exact Integer Atomic Units:** Strictly store all monetary amounts as integer atomic units (`int` micro-USDC, lamports, KES cents) to eliminate floating-point rounding errors.
+- **Idempotency Invariant:** Compound index on `(order_id, memo)` guarantees exactly-once execution for every order state transition.
 - **Financial Reconciliation:** Provide automated reconciliation routines matching local ledger balances against Solana on-chain token vault balances and Safaricom M-Pesa statement exports.
 
 ---
 
-## 2. Storage Engine Decision: File-Backed SQLite WAL
+## 2. Storage Engine Architecture: Pure-Rust Embedded SurrealKV
 
-### Selection: SQLite WAL Mode (`/var/data/bamboo/relayer.db`)
-For Bamboo v1, **file-backed SQLite WAL** is selected over PostgreSQL.
+### Selection: Embedded SurrealKV (`surrealkv_data`)
+Per [ADR 0004](../../docs/decisions/0004-relayer-zero-cloud-surrealkv.md), **Embedded SurrealKV** supersedes SQLite WAL.
 
-| Evaluation Dimension | SQLite WAL | PostgreSQL | Decision Rationale for v1 |
-|---|---|---|---|
-| **Operational Overhead** | Zero external dependencies; single file; runs inside daemon process. | Requires external daemon, connection pool, backup agent, and RDS/host provisioning. | **SQLite wins:** Preserves the zero-cloud, single-binary architecture mandated by ADR 0004. |
-| **Write Performance** | 20,000–50,000 writes/sec with WAL + memory-mapped I/O. | 5,000–10,000 writes/sec (network roundtrip bound). | **SQLite wins:** Exceeds v1 throughput requirements by three orders of magnitude. |
-| **Concurrency Model** | Multiple readers, single writer with zero lock contention in WAL mode. | Multi-reader, multi-writer MVCC. | **SQLite adequate:** The relayer runs as a single-instance daemon where writes are serialized through an async worker. |
-| **Crash Safety** | Full ACID durability; write-ahead log survives process crashes and power loss. | Full ACID durability with enterprise write replication. | **Tie:** Both guarantee zero corrupted transactions on crash. |
+| Evaluation Dimension | Embedded SurrealKV | SQLite WAL | PostgreSQL | Decision Rationale |
+|---|---|---|---|---|
+| **Language & Dependencies** | **100% Pure Rust** (`surrealdb` with `kv-surrealkv`). | C-library bindings (`rusqlite`). | External C/C++ daemon. | **SurrealKV wins:** Hermetic compilation into single static Rust binary. |
+| **Operational Overhead** | **Zero external dependencies**; mounts directly to NVMe SSD. | Zero external dependencies; single file. | External connection pools, container sidecars, backups. | **SurrealKV wins:** Zero cloud bloat, sovereign host execution. |
+| **Real-Time Streaming** | **Native `LIVE SELECT`** changefeeds for order updates. | Polling / custom triggers required. | Requires `LISTEN/NOTIFY` or external Kafka/Redis. | **SurrealKV wins:** Instant push notifications to WebSocket clients. |
+| **Financial Integrity** | **Engine-level `SCHEMAFULL`** assertions and integer atomic types. | Table constraints, dynamic types. | Strong relational schema. | **SurrealKV wins:** Schema enforcement with document-graph flexibility. |
 
 ---
 
@@ -52,132 +54,126 @@ For Bamboo v1, **file-backed SQLite WAL** is selected over PostgreSQL.
 
 | Account ID | Category | Currency / Unit | Description |
 |---|---|---|---|
-| `ESCROW_RECEIVABLE` | Asset | USDC (atomic units) | Collateral locked in Solana escrow vaults awaiting finalization. |
-| `MPESA_FLOAT` | Asset | KES (integer) | Working fiat capital held in Safaricom B2C shortcode account. |
-| `RELAYER_USDC_HOT` | Asset | USDC (atomic units) | Settled crypto collateral received into relayer hot wallet. |
-| `HOST_FEE_REVENUE` | Revenue | USDC (atomic units) | Cumulative 20–25 bps protocol fees collected by relayer. |
-| `DISPUTE_WRITEOFF` | Expense | KES (integer) | Payout losses incurred from disputed or uncollectible orders. |
-| `EQUITY_CAPITAL` | Equity | Multi-currency | Initial capital injected by the reference relayer operator. |
+| `asset:escrow:solana_vault` | Asset | USDC (micro-units, 6 dec) | Collateral locked in Solana escrow vaults awaiting finalization. |
+| `asset:fiat:mpesa_b2c_float` | Asset | KES (cents, 2 dec) | Working fiat capital held in Safaricom B2C shortcode account. |
+| `asset:relayer:usdc_hot_wallet` | Asset | USDC (micro-units, 6 dec) | Settled crypto collateral received into relayer hot wallet. |
+| `revenue:protocol:host_fee` | Revenue | USDC (micro-units, 6 dec) | Cumulative protocol host fees collected by relayer ($\le 100\text{ bps}$). |
+| `expense:fiat:safaricom_tariff` | Expense | KES (cents, 2 dec) | Safaricom B2C bulk payment business charges (KES 5–13). |
+| `expense:tax:kenya_excise_duty` | Expense | USDC / KES | 10% statutory excise tax under Kenya Finance Act 2025. |
+| `equity:reserve:fraud_loss_reserve` | Equity | USDC (micro-units, 6 dec) | Loss reserve seeded via founder capital contribution ($2,000 T0). |
 
 ### 3.2 Fundamental Accounting Invariants
 1. **Zero-Sum Transaction Balance:**
-   Every financial transaction comprises at least two postings whose amounts satisfy:
-   $$\sum_{i} \text{Debit}_i - \sum_{j} \text{Credit}_j = 0$$
+   Every financial transaction comprises postings whose amounts satisfy:
+   $$\sum \text{Debits} - \sum \text{Credits} = 0$$
 2. **Float Solvency:**
-   $$\text{Balance}(\text{MPESA\_FLOAT}) \ge 0$$
-   The relayer rejects new quotes if available M-Pesa float is insufficient to settle the requested fiat volume.
-3. **Atomic Account Balance Updates:**
-   Inserting a journal entry MUST update the corresponding `accounts.balance` column within the same database transaction.
+   $$\text{Balance}(\text{asset:fiat:mpesa_b2c_float}) \ge 0$$
+   The relayer daemon rejects new quotes if liquid float is below safe threshold ($F_{\text{min}}$).
+3. **Atomic Balance Updates:**
+   Journal postings and account balance updates are committed atomically within an ACID transaction block.
 
 ---
 
-## 4. Database Schema (SQLite DDL)
+## 4. SurrealQL Database Schema (`SCHEMAFULL`)
 
-```sql
-PRAGMA journal_mode = WAL;
-PRAGMA synchronous = NORMAL;
-PRAGMA foreign_keys = ON;
+```surrealql
+-- 1. Orders Table Definition
+DEFINE TABLE order SCHEMAFULL;
+DEFINE FIELD order_id ON TABLE order TYPE string;
+DEFINE FIELD flow_direction ON TABLE order TYPE string ASSERT $value IN ["ON_RAMP", "OFF_RAMP"];
+DEFINE FIELD spoke_chain ON TABLE order TYPE string ASSERT $value IN ["solana", "base", "bsc"];
+DEFINE FIELD fiat_rail ON TABLE order TYPE string;
+DEFINE FIELD fiat_currency ON TABLE order TYPE string;
+DEFINE FIELD fiat_amount_atomic ON TABLE order TYPE int ASSERT $value > 0;
+DEFINE FIELD crypto_asset ON TABLE order TYPE string;
+DEFINE FIELD crypto_amount_atomic ON TABLE order TYPE int ASSERT $value > 0;
+DEFINE FIELD host_fee_bps ON TABLE order TYPE int ASSERT $value <= 100;
+DEFINE FIELD status ON TABLE order TYPE string 
+    ASSERT $value IN ["QUOTE_PENDING", "QUOTE_EXPIRED", "LOCKED", "PROCESSING", "SETTLED", "DISPUTED", "REFUNDED"];
+DEFINE FIELD maker ON TABLE order TYPE string;
+DEFINE FIELD recipient_identifier ON TABLE order TYPE string;
+DEFINE FIELD fiat_tx_id ON TABLE order TYPE option<string>;
+DEFINE FIELD expires_at ON TABLE order TYPE datetime;
+DEFINE FIELD created_at ON TABLE order TYPE datetime VALUE $before OR time::now();
+DEFINE FIELD updated_at ON TABLE order TYPE datetime VALUE time::now();
+DEFINE INDEX idx_order_id ON TABLE order FIELDS order_id UNIQUE;
 
--- Financial Accounts
-CREATE TABLE IF NOT EXISTS accounts (
-    id TEXT PRIMARY KEY,
-    name TEXT NOT NULL,
-    currency TEXT NOT NULL, -- 'USDC' or 'KES'
-    balance INTEGER NOT NULL DEFAULT 0,
-    created_at INTEGER NOT NULL
-);
+-- 2. Chart of Accounts Table
+DEFINE TABLE account SCHEMAFULL;
+DEFINE FIELD account_id ON TABLE account TYPE string;
+DEFINE FIELD description ON TABLE account TYPE string;
+DEFINE FIELD asset ON TABLE account TYPE string;
+DEFINE FIELD balance_atomic ON TABLE account TYPE int;
+DEFINE FIELD updated_at ON TABLE account TYPE datetime VALUE time::now();
+DEFINE INDEX idx_account_id ON TABLE account FIELDS account_id UNIQUE;
 
--- Balanced Journal Transactions
-CREATE TABLE IF NOT EXISTS journal_transactions (
-    id TEXT PRIMARY KEY,
-    order_id TEXT,
-    timestamp INTEGER NOT NULL,
-    description TEXT NOT NULL
-);
-
--- Individual Debit / Credit Postings
-CREATE TABLE IF NOT EXISTS journal_postings (
-    id TEXT PRIMARY KEY,
-    transaction_id TEXT NOT NULL,
-    account_id TEXT NOT NULL,
-    entry_type TEXT NOT NULL CHECK(entry_type IN ('DEBIT', 'CREDIT')),
-    amount INTEGER NOT NULL CHECK(amount > 0),
-    FOREIGN KEY(transaction_id) REFERENCES journal_transactions(id) ON DELETE CASCADE,
-    FOREIGN KEY(account_id) REFERENCES accounts(id)
-);
-
--- Order State Mirror
-CREATE TABLE IF NOT EXISTS orders (
-    order_id TEXT PRIMARY KEY,
-    maker TEXT NOT NULL,
-    token_mint TEXT NOT NULL,
-    crypto_amount INTEGER NOT NULL,
-    fiat_amount INTEGER NOT NULL,
-    fiat_recipient_hash TEXT NOT NULL,
-    recipient_phone TEXT NOT NULL,
-    salt BLOB NOT NULL,
-    host_fee_bps INTEGER NOT NULL,
-    expiry_timestamp INTEGER NOT NULL,
-    mpesa_receipt TEXT,
-    status TEXT NOT NULL,
-    created_at INTEGER NOT NULL,
-    updated_at INTEGER NOT NULL
-);
-
--- Indexes for Rapid Replay and Audit
-CREATE INDEX IF NOT EXISTS idx_postings_tx ON journal_postings(transaction_id);
-CREATE INDEX IF NOT EXISTS idx_postings_account ON journal_postings(account_id);
-CREATE INDEX IF NOT EXISTS idx_orders_status ON orders(status);
+-- 3. Double-Entry Journal Entries Table
+DEFINE TABLE journal_entry SCHEMAFULL;
+DEFINE FIELD order_id ON TABLE journal_entry TYPE string;
+DEFINE FIELD debit_account ON TABLE journal_entry TYPE string;
+DEFINE FIELD credit_account ON TABLE journal_entry TYPE string;
+DEFINE FIELD asset ON TABLE journal_entry TYPE string;
+DEFINE FIELD amount_atomic ON TABLE journal_entry TYPE int ASSERT $value > 0;
+DEFINE FIELD memo ON TABLE journal_entry TYPE string;
+DEFINE FIELD timestamp ON TABLE journal_entry TYPE datetime VALUE time::now();
+-- Idempotency constraint: guarantees exactly-once finalization per event
+DEFINE INDEX idx_order_event ON TABLE journal_entry FIELDS order_id, memo UNIQUE;
 ```
 
 ---
 
-## 5. Lifecycle Accounting Entries
+## 5. Lifecycle Accounting Entries ($100 Ticket Benchmark)
 
-### Scenario A: Order Locked On-Chain
-When an `OrderLocked` event is confirmed on Solana:
-*Memorandum entry recording off-chain collateral commitment.*
+### 5.1 Event: Fiat Disbursement (M-Pesa Sent)
+When Safaricom confirms KES 13,050 payout:
+```text
+BEGIN TRANSACTION;
+  -- Record Disbursement
+  CREATE journal_entry CONTENT {
+      order_id: $order_id,
+      debit_account: "expense:fiat:mpesa_disbursement",
+      credit_account: "asset:fiat:mpesa_b2c_float",
+      asset: "KES",
+      amount_atomic: 1305000, -- KES 13,050.00
+      memo: "DISBURSEMENT_PAYOUT"
+  };
+  -- Record Safaricom Tariff
+  CREATE journal_entry CONTENT {
+      order_id: $order_id,
+      debit_account: "expense:fiat:safaricom_tariff",
+      credit_account: "asset:fiat:mpesa_b2c_float",
+      asset: "KES",
+      amount_atomic: 1100, -- KES 11.00
+      memo: "SAFARICOM_B2C_TARIFF"
+  };
+  UPDATE account SET balance_atomic -= 1306100 WHERE account_id = "asset:fiat:mpesa_b2c_float";
+COMMIT TRANSACTION;
+```
 
-### Scenario B: M-Pesa Disbursement Confirmed
-When Safaricom confirms KES transfer via callback:
-```
-Transaction: M-Pesa Payout Disbursed (Order e5beec6e...)
-  DEBIT   ESCROW_RECEIVABLE_KES       KES 13,050
-  CREDIT  MPESA_FLOAT                 KES 13,050
-```
-
-### Scenario C: Solana Settlement Finalized
-When `finalize()` completes on Solana, transferring 100 USDC to relayer:
-```
-Transaction: Escrow Finalized (Order e5beec6e...)
-  DEBIT   RELAYER_USDC_HOT            100,000,000 (100.00 USDC)
-  CREDIT  ESCROW_RECEIVABLE           99,800,000  (99.80 USDC Payout)
-  CREDIT  HOST_FEE_REVENUE            200,000     (0.20 USDC Fee)
-```
-
-### Scenario D: Dispute Loss (Maker Disputed After Relayer Paid Fiat)
-If an order is disputed and funds return to the maker upon timeout:
-```
-Transaction: Dispute Write-Off (Order e5beec6e...)
-  DEBIT   DISPUTE_WRITEOFF            KES 13,050
-  CREDIT  ESCROW_RECEIVABLE_KES       KES 13,050
+### 5.2 Event: Settlement Finalized On-Chain
+When `finalize()` succeeds on Solana (100 USDC received, 75 bps host fee):
+```text
+BEGIN TRANSACTION;
+  CREATE journal_entry CONTENT {
+      order_id: $order_id,
+      debit_account: "asset:relayer:usdc_hot_wallet",
+      credit_account: "asset:escrow:solana_vault",
+      asset: "USDC",
+      amount_atomic: 100000000, -- 100.00 USDC
+      memo: "ESCROW_FINALIZED"
+  };
+  UPDATE account SET balance_atomic += 100000000 WHERE account_id = "asset:relayer:usdc_hot_wallet";
+  UPDATE account SET balance_atomic -= 100000000 WHERE account_id = "asset:escrow:solana_vault";
+COMMIT TRANSACTION;
 ```
 
 ---
 
-## 6. Daily Reconciliation & Disaster Recovery
+## 6. Three-Way Automated Reconciliation
 
-### 6.1 Three-Way Automated Reconciliation
 Every 24 hours at 00:00 UTC, the relayer runs an automated three-way check:
-1. **On-Chain Escrows vs. Ledger:** Sum of active `ESCROW_RECEIVABLE` accounts must equal the token balance of all un-settled `token_vault` accounts on Solana.
-2. **Daraja Utility vs. Ledger:** Call Safaricom's Account Balance API (`POST /mpesa/accountbalance/v1/query`) and confirm `WorkingAccountAvailableFunds` matches `MPESA_FLOAT.balance` within a tolerance of pending in-flight transactions.
-3. **Hot Wallet vs. Ledger:** Query the relayer's Solana USDC token account and verify it matches `RELAYER_USDC_HOT.balance`.
-
-### 6.2 Backup & Restore Procedure
-- **Live WAL Snapshot:** Backed up every 6 hours using SQLite's online backup API:
-  ```bash
-  sqlite3 /var/data/bamboo/relayer.db ".backup /var/backups/bamboo/relayer_$(date +%s).bak"
-  ```
-- **Disaster Recovery:** Restoring from backup requires replaying Solana finalized transactions since the backup timestamp to restore full synchronization.
+1. **On-Chain Escrows vs. SurrealKV:** Sum of active `asset:escrow:solana_vault` balances must equal the token balance of all un-settled `token_vault` accounts on Solana.
+2. **Daraja Utility vs. SurrealKV:** Call Safaricom's Account Balance API (`POST /mpesa/accountbalance/v1/query`) and confirm `WorkingAccountAvailableFunds` matches `asset:fiat:mpesa_b2c_float` within tolerance of in-flight disbursements.
+3. **Hot Wallet vs. SurrealKV:** Query the relayer's Solana USDC token account and verify it matches `asset:relayer:usdc_hot_wallet`.
 
 <!-- OPENWIKI:END -->

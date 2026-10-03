@@ -29,7 +29,7 @@ The `bamboo-relayer` daemon is a single-binary Rust service that orchestrates th
 - **RFQ Rate Quoting:** Serve signed, time-bounded exchange rate quotes ($\le 7\text{ seconds}$) via REST and WebSocket channels.
 - **Automated Payout Pipeline:** Upon detecting a finalized `OrderLocked` event, validate order parameters, initiate M-Pesa B2C payment, and capture transaction references.
 - **On-Chain Settlement Lifecycle:** Submit `request_settlement` on Solana, monitor the dispute window ($W$), and trigger `finalize` once $W$ expires.
-- **Crash Recovery & Idempotency:** Persist operational state into an ACID SQLite WAL ledger so that daemon restarts resume pending orders without duplicate fiat disbursements.
+- **Crash Recovery & Idempotency:** Persist operational state into an ACID Embedded SurrealKV ledger so that daemon restarts resume pending orders without duplicate fiat disbursements.
 
 ---
 
@@ -51,7 +51,7 @@ flowchart TD
     Queue["Async Ingestion Channel\n(tokio::sync::mpsc)"]
     Worker["Event Processing Worker"]
     BackfillCron["Periodic Backfill Cron (Every 60s)\ngetSignaturesForAddress(bamboo_escrow)"]
-    DB["SQLite Orders Table"]
+    DB["Embedded SurrealKV"]
 
     WS -- "Live Finalized Events" --> Queue
     BackfillCron -- "Missed Signatures" --> Queue
@@ -61,7 +61,7 @@ flowchart TD
 
 1. **Live Stream:** Connects to Solana RPC WebSocket via `logsSubscribe` filtered by the `bamboo_escrow` program ID with `finalized` commitment.
 2. **Backfill Loop:** Every 60 seconds, polls `getSignaturesForAddress` to catch any event dropped during transient network disconnects.
-3. **Deduplication:** Uses on-chain transaction signatures and canonical `order_id` in SQLite primary keys (`INSERT OR IGNORE`) to ensure events are processed exactly once.
+3. **Deduplication:** Uses on-chain transaction signatures and canonical `order_id` in SurrealKV unique indexes (`idx_order_id`) to ensure events are processed exactly once.
 
 ---
 
@@ -90,7 +90,7 @@ In prior versions ([`rfq.rs:54`](../../crates/bamboo-relayer/src/rfq.rs)), rates
 
 ### 4.1 Production RFQ Mechanics
 1. **Rate Feed Ingestion:** The relayer polls live wholesale USD/KES rates from institutional FX feeds or local liquid order books, adding a configurable relayer spread ($\approx 1.0\%\text{ to }1.5\%$) to cover M-Pesa disbursement tariffs and treasury rebalancing.
-2. **Deterministic Fee Enforcement:** Verifies that `host_fee_bps` never exceeds `MAX_HOST_FEE_BPS` (25 bps / 0.25%).
+2. **Deterministic Fee Enforcement:** Verifies that `host_fee_bps` never exceeds `MAX_HOST_FEE_BPS` (100 bps / 1.00%).
 3. **Cryptographic Quote Signing:** Each quote is signed by the relayer's ed25519 identity key, guaranteeing that the rate cannot be tampered with between quotation and on-chain lock.
 
 ```json
@@ -102,7 +102,7 @@ In prior versions ([`rfq.rs:54`](../../crates/bamboo-relayer/src/rfq.rs)), rates
   "fiat_currency": "KES",
   "fiat_amount": 13050,
   "exchange_rate": 130.50,
-  "host_fee_bps": 20,
+  "host_fee_bps": 75,
   "expires_at": 1780000007,
   "signature": "3c8f...ed25519"
 }
@@ -117,7 +117,7 @@ sequenceDiagram
     autonumber
     participant Chain as Solana Cluster
     participant Daemon as bamboo-relayer
-    participant DB as SQLite WAL DB
+    participant DB as Embedded SurrealKV
     participant Fiat as M-Pesa Adapter
 
     Chain->>Daemon: Finalized OrderLocked(order_id, maker, amount, hash)

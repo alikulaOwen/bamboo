@@ -1,7 +1,7 @@
 ---
 okf_version: "0.2"
 title: "Protocol Sustainability & Unit Economics Design"
-description: "Economic architecture for Project Bamboo v1: 100 bps on-chain fee ceiling, per-ticket margin model, reserve seeding, SQLite ledger invariants, and operational state controller."
+description: "Economic architecture for Project Bamboo v1: 100 bps on-chain fee ceiling, per-ticket margin model, reserve seeding, SurrealKV ledger invariants, and operational state controller."
 type: "plan"
 tags:
   - plan
@@ -29,7 +29,7 @@ Project Bamboo v1 provides deterministic, sovereign crypto-to-fiat routing betwe
 3. **Neutralizing Small-Ticket Drag via Minimum Order Size:** Rather than imposing an aggressive fee floor that penalizes micro-transactions, Bamboo enforces a minimum order threshold of **$20.00\text{ to }\$25.00\text{ USDC}$**. This guarantees that fixed domestic disbursements (Safaricom B2C minimum KES 5.00 $\approx \$0.038$) never consume more than 20 bps of the margin.
 4. **V1 Fraud Defense Without Staking Traps:** Dispute bonds are deferred for v1 (resolving **D-7** as *No Bond in v1*). In v1, chargeback and extortion defense relies on per-user velocity caps, integrator-attested KYC tiers, and a dedicated **Dispute & Fraud Loss Reserve**.
 5. **Separation of Spread vs. Floor Protections:** The fee floor/minimum order size neutralizes the Safaricom fixed bracket. The relayer's automated health controller transitions to **Amber** when wholesale OTC refill spreads exceed 50 bps, preventing spread spikes from eroding capital.
-6. **Double-Entry SQLite Accounting:** System of record is local SQLite with Write-Ahead Logging (WAL) per **DEC-02**. All monetary values are recorded as `INTEGER` atomic units (lamports, micro-USDC, KES cents) with unique idempotency constraints per order lifecycle event.
+6. **Embedded SurrealKV Ledger Engine (ADR 0004):** System of record is pure-Rust embedded SurrealDB backed by SurrealKV. All financial balances and journal transfers are recorded as exact `int` atomic units (lamports, micro-USDC, KES cents) with unique idempotency compound indexes guaranteeing exactly-once finalization.
 
 ---
 
@@ -133,59 +133,56 @@ $$\text{Monthly Break-Even Volume} = \frac{\$1{,}250}{0.0045} \approx \mathbf{\$
 
 ---
 
-## 7. SQLite Double-Entry Ledger Schema (DEC-02 Alignment)
+## 7. Embedded SurrealKV Double-Entry Ledger Schema (ADR 0004 Alignment)
 
-The relayer system of record implements a local SQLite database in Write-Ahead Logging (WAL) mode. All monetary balances are stored as exact `INTEGER` atomic units. Floating-point numbers are strictly forbidden.
+The relayer system of record implements pure-Rust embedded **SurrealDB backed by SurrealKV** (`crates/bamboo-relayer/src/db.rs`), completely eliminating external DBMS daemons, PostgreSQL servers, and C-bindings (`rusqlite`).
 
-### 7.1 Schema Definition (`schema.sql`)
+All monetary balances are stored as exact `int` atomic units (lamports, micro-USDC, KES cents). Floating-point `number` representations are strictly prohibited to prevent decimal drift.
 
-```sql
-PRAGMA journal_mode = WAL;
-PRAGMA foreign_keys = ON;
+### 7.1 SurrealQL SCHEMAFULL Definition
 
--- Order state mirror
-CREATE TABLE IF NOT EXISTS orders (
-    order_id BLOB PRIMARY KEY,              -- 32-byte canonical hash
-    maker_pubkey TEXT NOT NULL,             -- Solana base58 address
-    assigned_relayer TEXT NOT NULL,         -- Solana base58 address
-    token_mint TEXT NOT NULL,               -- USDC mint address
-    amount INTEGER NOT NULL,                -- Atomic micro-USDC (6 decimals)
-    fiat_recipient_hash BLOB NOT NULL,      -- SHA256 of recipient phone
-    host_fee_bps INTEGER NOT NULL,          -- Protocol fee in bps (<= 100)
-    status TEXT NOT NULL,                   -- Locked, SettlementRequested, Disputed, Finalized, Refunded
-    fiat_tx_id TEXT,                        -- Safaricom M-Pesa receipt
-    created_at INTEGER NOT NULL,            -- Unix timestamp
-    updated_at INTEGER NOT NULL
-);
+```surrealql
+-- 1. Orders Table Definition
+DEFINE TABLE order SCHEMAFULL;
+DEFINE FIELD order_id ON TABLE order TYPE string;
+DEFINE FIELD flow_direction ON TABLE order TYPE string ASSERT $value IN ["ON_RAMP", "OFF_RAMP"];
+DEFINE FIELD spoke_chain ON TABLE order TYPE string ASSERT $value IN ["solana", "base", "bsc"];
+DEFINE FIELD fiat_rail ON TABLE order TYPE string;
+DEFINE FIELD fiat_currency ON TABLE order TYPE string;
+DEFINE FIELD fiat_amount_atomic ON TABLE order TYPE int ASSERT $value > 0; -- e.g. KES cents
+DEFINE FIELD crypto_asset ON TABLE order TYPE string;
+DEFINE FIELD crypto_amount_atomic ON TABLE order TYPE int ASSERT $value > 0; -- micro-USDC (6 decimals)
+DEFINE FIELD host_fee_bps ON TABLE order TYPE int ASSERT $value <= 100;
+DEFINE FIELD status ON TABLE order TYPE string 
+    ASSERT $value IN ["QUOTE_PENDING", "QUOTE_EXPIRED", "LOCKED", "PROCESSING", "SETTLED", "DISPUTED", "REFUNDED"];
+DEFINE FIELD maker ON TABLE order TYPE string;
+DEFINE FIELD recipient_identifier ON TABLE order TYPE string;
+DEFINE FIELD fiat_tx_id ON TABLE order TYPE option<string>;
+DEFINE FIELD expires_at ON TABLE order TYPE datetime;
+DEFINE FIELD created_at ON TABLE order TYPE datetime VALUE $before OR time::now();
+DEFINE FIELD updated_at ON TABLE order TYPE datetime VALUE time::now();
+DEFINE INDEX idx_order_id ON TABLE order FIELDS order_id UNIQUE;
 
--- Chart of Accounts
-CREATE TABLE IF NOT EXISTS accounts (
-    account_id TEXT PRIMARY KEY,            -- e.g. 'asset:vault:usdc', 'liability:user:kes'
-    account_type TEXT NOT NULL,             -- Asset, Liability, Equity, Revenue, Expense
-    currency TEXT NOT NULL                  -- 'USDC' (atomic micro-units) or 'KES' (cents)
-);
+-- 2. Chart of Accounts Table
+DEFINE TABLE account SCHEMAFULL;
+DEFINE FIELD account_id ON TABLE account TYPE string;
+DEFINE FIELD description ON TABLE account TYPE string;
+DEFINE FIELD asset ON TABLE account TYPE string;
+DEFINE FIELD balance_atomic ON TABLE account TYPE int; -- Positive/negative atomic units
+DEFINE FIELD updated_at ON TABLE account TYPE datetime VALUE time::now();
+DEFINE INDEX idx_account_id ON TABLE account FIELDS account_id UNIQUE;
 
--- Double-Entry Journal Entries
-CREATE TABLE IF NOT EXISTS journal_entries (
-    entry_id INTEGER PRIMARY KEY AUTOINCREMENT,
-    order_ref BLOB NOT NULL,                -- Foreign key to orders(order_id)
-    entry_type TEXT NOT NULL,               -- 'LOCK', 'DISBURSE', 'FINALIZE', 'EXCISE', 'LOSS'
-    timestamp INTEGER NOT NULL,
-    FOREIGN KEY(order_ref) REFERENCES orders(order_id),
-    -- Idempotency constraint: guarantees exactly-once finalization per event
-    CONSTRAINT uq_order_event UNIQUE(order_ref, entry_type)
-);
-
--- Journal Line Postings (Debits and Credits must balance)
-CREATE TABLE IF NOT EXISTS journal_postings (
-    posting_id INTEGER PRIMARY KEY AUTOINCREMENT,
-    entry_id INTEGER NOT NULL,
-    account_id TEXT NOT NULL,
-    amount INTEGER NOT NULL,                -- Positive integer
-    direction TEXT CHECK(direction IN ('DEBIT', 'CREDIT')) NOT NULL,
-    FOREIGN KEY(entry_id) REFERENCES journal_entries(entry_id),
-    FOREIGN KEY(account_id) REFERENCES accounts(account_id)
-);
+-- 3. Double-Entry Journal Entries Table
+DEFINE TABLE journal_entry SCHEMAFULL;
+DEFINE FIELD order_id ON TABLE journal_entry TYPE string;
+DEFINE FIELD debit_account ON TABLE journal_entry TYPE string;
+DEFINE FIELD credit_account ON TABLE journal_entry TYPE string;
+DEFINE FIELD asset ON TABLE journal_entry TYPE string;
+DEFINE FIELD amount_atomic ON TABLE journal_entry TYPE int ASSERT $value > 0;
+DEFINE FIELD memo ON TABLE journal_entry TYPE string;
+DEFINE FIELD timestamp ON TABLE journal_entry TYPE datetime VALUE time::now();
+-- Idempotency constraint: guarantees exactly-once finalization per event
+DEFINE INDEX idx_order_event ON TABLE journal_entry FIELDS order_id, memo UNIQUE;
 ```
 
 ### 7.2 Double-Entry Finalization Journal Entry ($100 Ticket)

@@ -1,3 +1,7 @@
+
+pub mod rate_limiter;
+pub use rate_limiter::{MultiClientRateLimiter, RateLimitRejection, RateLimitRejectionReason, TokenBucket};
+
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use thiserror::Error;
@@ -27,9 +31,13 @@ pub enum BambooCoreError {
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Hash)]
+#[serde(rename_all = "snake_case")]
 pub enum ChainEndpoint {
+    #[serde(alias = "Base", alias = "BASE")]
     Base,
+    #[serde(alias = "Solana", alias = "SOLANA")]
     Solana,
+    #[serde(alias = "Bsc", alias = "BSC")]
     Bsc, // BNB Smart Chain Spoke
 }
 
@@ -131,6 +139,30 @@ pub fn compute_canonical_order_id(
     order_id
 }
 
+/// Compute canonical 32-byte Solana order ID matching the Anchor escrow program byte-for-byte:
+/// sha256("BAMBOO_ORDER_V1" || maker || mint || amount_le || fiat_hash || relayer || nonce_le)
+pub fn compute_solana_order_id(
+    maker: &[u8; 32],
+    mint: &[u8; 32],
+    amount: u64,
+    fiat_recipient_hash: &[u8; 32],
+    relayer: &[u8; 32],
+    nonce: u64,
+) -> [u8; 32] {
+    let mut hasher = Sha256::new();
+    hasher.update(b"BAMBOO_ORDER_V1");
+    hasher.update(maker);
+    hasher.update(mint);
+    hasher.update(&amount.to_le_bytes());
+    hasher.update(fiat_recipient_hash);
+    hasher.update(relayer);
+    hasher.update(&nonce.to_le_bytes());
+    let result = hasher.finalize();
+    let mut order_id = [0u8; 32];
+    order_id.copy_from_slice(&result);
+    order_id
+}
+
 /// Compute canonical fiat recipient hash for off-chain destination
 pub fn compute_fiat_recipient_hash(recipient_identifier: &str, salt: &[u8]) -> [u8; 32] {
     let mut hasher = Sha256::new();
@@ -178,5 +210,19 @@ mod tests {
         let id1 = compute_canonical_order_id(ChainEndpoint::Base, "maker_a", "usdc", 100, &fiat_hash, 1);
         let id2 = compute_canonical_order_id(ChainEndpoint::Base, "maker_a", "usdc", 100, &fiat_hash, 1);
         assert_eq!(id1, id2);
+    }
+
+    #[test]
+    fn test_solana_order_id_golden_vector() {
+        let maker = [1u8; 32];
+        let mint = [2u8; 32];
+        let relayer = [3u8; 32];
+        let fiat_hash = [4u8; 32];
+        let id = compute_solana_order_id(&maker, &mint, 1_000_000, &fiat_hash, &relayer, 7);
+        let hex_id: String = id.iter().map(|b| format!("{b:02x}")).collect();
+        assert_eq!(
+            hex_id,
+            "69fd5a810ba7506c442e3ab4f1435c770a41a2dd1eef3187f411f8e1f9519ed5"
+        );
     }
 }
